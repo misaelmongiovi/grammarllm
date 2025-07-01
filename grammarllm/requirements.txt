@@ -1,0 +1,5 @@
+torch
+tqdm
+transformers
+setuptools
+accelerate>=0.26.0
