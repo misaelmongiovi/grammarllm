@@ -1,5 +1,6 @@
 import logging
 class BaseStreamer:
+    #Stereamer has the functionality of updating PDA
     """
     Base class from which `.generate()` streamers should inherit.
     """
@@ -16,8 +17,9 @@ class BaseStreamer:
         
         """Function that is called by `.generate()` to push new tokens"""
         generated_token_id = value[0]
-        logging.info(f"Valore ricevuto in put: {generated_token_id}")
-        logging.info(f"Valore ricevuto in put:{generated_token_id}")
+        #TO UNCOMMENT ONLY IF YOU WANT TO SEE THE ID TOKENS OF YOUR PROMPT 
+        #logging.info(f"Valore ricevuto in put: {generated_token_id}") #DEBUG
+        #logging.info(f"Valore ricevuto in put:{generated_token_id}") #DEBUG
 
         if not self.is_first_call:
 

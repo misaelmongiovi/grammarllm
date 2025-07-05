@@ -11,68 +11,37 @@ class ProductionRuleProcessor:
         self.non_terminals = set()  # Traccia tutti i non terminali
         self.rule_specific_grammars = {}  # Grammatiche specifiche per ogni regola
     
-    def extract_tags_and_others(self, rhs_list):
-        """Estrae i tag <<...>> e gli altri elementi dalle regole di produzione"""
-        tags_list = []
-        others_list = []
+    def extract_tags_and_others(self,rhs_list):
+        """Restituisce una lista di elementi ordinati con tipo 'tag' o 'other'"""
         tag_pattern = re.compile(r'<<(.+?)>>')
-
-        def smart_split(item):
-            # Trova tutti i tag <<...>> e separa il resto del testo
-            matches = list(tag_pattern.finditer(item))
-            parts = []
-            last_index = 0
-
-            for match in matches:
-                # Aggiungi il testo prima del tag, splittato
-                pre_text = item[last_index:match.start()]
-                if pre_text.strip():
-                    parts.extend(pre_text.strip().split())
-
-                # Aggiungi il tag intero come una sola unità
-                parts.append(match.group(0))
-                last_index = match.end()
-
-            # Aggiungi eventuale testo dopo l'ultimo tag
-            post_text = item[last_index:]
-            if post_text.strip():
-                parts.extend(post_text.strip().split())
-
-            return parts
+        result = []
 
         for item in rhs_list:
-            tags = []
-            others = []
-            if re.search(tag_pattern, item):
-                words = smart_split(item)
-                current_chunk = []
-                for word in words:
-                    match = re.fullmatch(tag_pattern, word)
-                    if match:
-                        tags.append(match.group(1))  # salva solo il contenuto del tag
-                        # Se c'è un chunk corrente, salvalo
-                        if current_chunk:
-                            others.append(' '.join(current_chunk))
-                            current_chunk = []
-                    else:
-                        current_chunk.append(word)
+            matches = list(tag_pattern.finditer(item))
+            last_index = 0
+            parts = []
 
-                # Aggiungi l'ultimo chunk se presente
-                if current_chunk:
-                    others.append(' '.join(current_chunk))
+            for match in matches:
+                # Testo prima del tag
+                pre_text = item[last_index:match.start()]
+                if pre_text.strip():
+                    for word in pre_text.strip().split():
+                        parts.append(("other", word))
 
-                # Se non ci sono altri elementi, aggiungi None
-                if not others:
-                    others.append(None)
+                # Il tag stesso
+                parts.append(("tag", match.group(1)))
+                last_index = match.end()
 
-                tags_list.append(tags)
-                others_list.append(others)
-            else:
-                tags_list.append([])
-                others_list.append([item])
+            # Eventuale testo dopo l'ultimo tag
+            post_text = item[last_index:]
+            if post_text.strip():
+                for word in post_text.strip().split():
+                    parts.append(("other", word))
 
-        return tags_list, others_list
-    
+            result.append(parts)
+
+        return result
+
     def tokenize_tag(self, tag):
         """Tokenizza un tag usando il tokenizer di Hugging Face"""
         if self.tokenizer is None:
@@ -105,7 +74,7 @@ class ProductionRuleProcessor:
 
         # TO UNCOMMENT ONLY IF YOU WANT TO DEBUG
         # # Scrivi su file per debug
-        # with open(f'temp/prefix_group_{rule_name}.txt', 'w+') as f:
+        # with open(f'grammarllm/temp/prefix_group_{rule_name}.txt', 'w+') as f:
         #     f.write(f"=== PREFISSI PER REGOLA {rule_name} ===\n")
         #     for prefix, tag_suffix_pairs in prefix_groups.items():
         #         f.write(f"Prefisso condiviso: {prefix}, Tag e Suffix: {tag_suffix_pairs}\n")
@@ -257,28 +226,36 @@ class ProductionRuleProcessor:
             return productions, {}
         
         # Le produzioni sono già liste di token, non stringhe
-        tokenized_productions = []
+        splitted_productions = []
         for prod in productions:
             if isinstance(prod, list):
                 if len(prod) == 0:
-                    tokenized_productions.append([])  # Produzione vuota
+                    splitted_productions.append([])  # Produzione vuota
                 else:
-                    tokenized_productions.append(prod)  # Già una lista di token
+                    splitted_productions.append(prod)  # Già una lista di token
             else:
                 # Fallback per stringhe (se ancora presenti)
                 if prod == "ε":
-                    tokenized_productions.append([])
+                    splitted_productions.append([])
                 else:
-                    tokenized_productions.append(prod.split())
+                    splitted_productions.append(prod.split())
         
-        # Trova il prefisso comune più lungo
+
         common_prefix = []
-        if tokenized_productions:
-            min_len = min(len(prod) for prod in tokenized_productions if len(prod) > 0)
-            if min_len > 0:
+        if splitted_productions:
+            # Considera solo le produzioni non vuote per il calcolo del prefisso
+            #non_empty_productions = [prod for prod in splitted_productions if len(prod) > 0]
+            non_empty_productions = [prod for prod in splitted_productions if len(prod) > 0 and prod != ["ε"]]
+
+            if len(non_empty_productions) > 1:  # Serve almeno 2 produzioni non vuote
+                min_len = min(len(prod) for prod in non_empty_productions)
+                
                 for i in range(min_len):
-                    tokens_at_pos = [prod[i] for prod in tokenized_productions if len(prod) > i]
-                    if len(set(tokens_at_pos)) == 1:  # Tutti uguali
+                    # Prendi il token alla posizione i da tutte le produzioni non vuote
+                    tokens_at_pos = [prod[i] for prod in non_empty_productions]
+                    
+                    # Se tutti i token sono uguali, aggiungi al prefisso comune
+                    if len(set(tokens_at_pos)) == 1:
                         common_prefix.append(tokens_at_pos[0])
                     else:
                         break
@@ -291,7 +268,7 @@ class ProductionRuleProcessor:
         suffixes = []
         factorization_info = {}
         
-        for i, prod in enumerate(tokenized_productions):
+        for i, prod in enumerate(splitted_productions):
             if len(prod) >= len(common_prefix):
                 suffix = prod[len(common_prefix):]
                 if len(suffix) == 0:
@@ -310,58 +287,37 @@ class ProductionRuleProcessor:
         
         return new_productions, factorization_info
 
-    def create_final_productions_for_rule(self, lhs, rhs_list, rule_specific_tag_grammar):
-        """Crea le regole di produzione finali per una singola regola grammaticale usando la grammatica specifica"""
+
+    def create_final_productions_for_rule(self, lhs, ordered_elements_list, rule_specific_tag_grammar):
         logging.info(f"\n=== PROCESSAMENTO REGOLA: {lhs} ===")
-        
-        # Estrai tag e altri elementi
-        tags_list, others_list = self.extract_tags_and_others(rhs_list)
-        
-        logging.info(f"RHS originali: {rhs_list}")
-        logging.info(f"Tag estratti: {tags_list}")
-        logging.info(f"Altri elementi: {others_list}")
-        
-        # Crea le produzioni con struttura simile ai tag
+
         productions = []
-        
-        for i, (tags, others) in enumerate(zip(tags_list, others_list)):
-            logging.info(f"Tags: {tags}, Altri: {others}")
-            
-            # Crea una sottolista per questa produzione
+
+        for ordered_elements in ordered_elements_list:
             production_sublist = []
-            
-            # Processo alternato: tag, altri, tag, altri, ...
-            max_len = max(len(tags), len(others))
-            
-            for j in range(max_len):
-                # Aggiungi tag se presente
-                if j < len(tags) and tags[j]:
-                    # Cerca il mapping specifico per questa regola
-                    tag_key = f"{lhs}::{tags[j]}"
+
+            for kind, value in ordered_elements:
+                if kind == "tag":
+                    tag_key = f"{lhs}::{value}"
                     tag_nt = self.tag_to_nt_mapping.get(tag_key)
                     if tag_nt:
-                        tag_tokens = tag_nt.split()  # "13 TAG_NT1" -> ["13", "TAG_NT1"]
-                        production_sublist.extend(tag_tokens)
+                        production_sublist.extend(tag_nt.split())
                     else:
-                        production_sublist.append(f"<<{tags[j]}>>")
-                
-                # Aggiungi altri elementi se presenti
-                if j < len(others) and others[j] and others[j].strip():
-                    other_tokens = others[j].split()
-                    production_sublist.extend(other_tokens)
-            
-            if production_sublist:
-                if production_sublist not in productions:
-                    productions.append(production_sublist)
-                    logging.info(f"  {lhs} -> {production_sublist}")
-            else:
+                        production_sublist.append(f"<<{value}>>")
+                else:  # "other"
+                    production_sublist.append(value)
+
+            if production_sublist and production_sublist not in productions:
+                productions.append(production_sublist)
+                logging.info(f"  {lhs} -> {production_sublist}")
+            elif not production_sublist:
                 productions.append([])
                 logging.info(f"  {lhs} -> []")
-        
+
         return productions
     
     def process_full_grammar(self, grammar_dict):
-        """Processa una grammatica completa con multiple regole di produzione - VERSIONE MODIFICATA"""
+        """Processa una grammatica completa con multiple regole di produzione - VERSIONE AGGIORNATA"""
         logging.info("=== ELABORAZIONE GRAMMATICA COMPLETA (PER REGOLA) ===")
         logging.info(f"Regole originali: {grammar_dict}")
         
@@ -377,14 +333,15 @@ class ProductionRuleProcessor:
             logging.info(f"PROCESSAMENTO SEPARATO DELLA REGOLA: {lhs}")
             logging.info(f"{'='*60}")
             
-            # Estrai i tag specifici di questa regola
-            tags_list, others_list = self.extract_tags_and_others(rhs_list)
-            rule_tags = []
+            # Estrai gli elementi ordinati con tipo ('tag' o 'other')
+            ordered_elements_list = self.extract_tags_and_others(rhs_list)
             
-            for tags in tags_list:
-                for tag in tags:
-                    if tag and tag not in rule_tags:
-                        rule_tags.append(tag)
+            # Estrai i tag specifici della regola
+            rule_tags = []
+            for ordered_elements in ordered_elements_list:
+                for kind, value in ordered_elements:
+                    if kind == "tag" and value not in rule_tags:
+                        rule_tags.append(value)
             
             logging.info(f"Tag specifici per {lhs}: {rule_tags}")
             
@@ -392,39 +349,34 @@ class ProductionRuleProcessor:
             if rule_tags:
                 rule_tag_grammar = self.build_tag_grammar_for_rule(rule_tags, lhs)
                 
-                # Aggiungi la grammatica dei tag di questa regola alla grammatica finale
+                # Aggiungi la grammatica dei tag alla grammatica finale
                 for key, value in rule_tag_grammar.items():
                     final_grammar[key] = value
             else:
                 rule_tag_grammar = {}
             
             # Crea le produzioni finali per questa regola
-            productions = self.create_final_productions_for_rule(lhs, rhs_list, rule_tag_grammar)
+            productions = self.create_final_productions_for_rule(lhs, ordered_elements_list, rule_tag_grammar)
             
             # Applica fattorizzazione dei prefissi comuni
             factorized_productions, factorization_info = self.find_common_prefixes_in_productions(productions)
             
             if factorization_info:
-                # Crea nuovo non terminale per i suffissi
                 new_nt = f"{lhs}_FACT"
                 logging.info(f"\n=== FATTORIZZAZIONE PER {lhs} ===")
                 logging.info(f"Prefisso comune: {factorization_info['common_prefix']}")
                 logging.info(f"Suffissi: {factorization_info['suffixes']}")
                 
-                # Regola principale fattorizzata
                 main_production = factorization_info['common_prefix'] + [new_nt]
                 final_grammar[(lhs, "RULE")] = [main_production]
-                
-                # Regola per i suffissi
                 final_grammar[(new_nt, "RULE")] = factorization_info['suffixes']
-                
             else:
                 final_grammar[(lhs, "RULE")] = productions
-        
+
         self.save_final_grammar(final_grammar)
         return final_grammar, self.tag_to_nt_mapping
 
-    def save_final_grammar(self, grammar, filename='temp/final_grammar.txt'):
+    def save_final_grammar(self, grammar, filename='grammarllm/temp/final_grammar.txt'):
         """Salva la grammatica finale in formato leggibile"""
         if not grammar:
             logging.info("  Grammatica vuota")

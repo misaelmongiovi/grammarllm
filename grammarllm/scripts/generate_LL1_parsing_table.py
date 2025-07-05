@@ -98,7 +98,7 @@ def parsing_table(final_rules):
         grammar[nt].extend(rules)
 
     def save_table_parsing_as_txt(parsing_table):
-        output_grammar_file = os.path.join('temp', 'table_parsing.json')
+        output_grammar_file = os.path.join('grammarllm/temp', 'table_parsing.json')
         os.makedirs(os.path.dirname(output_grammar_file), exist_ok=True)
         with open(output_grammar_file, "w", encoding="utf-8") as f:
             f.write("{\n")
