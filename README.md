@@ -22,6 +22,21 @@ It allows you to define and apply constraints via formal grammars, ideal for cla
 
 ---
 
+## ⚙️ Installation
+
+Run the following commands to clone the repository and install the requirements:
+
+```bash
+git clone https://github.com/misaelmongiovi/grammarllm.git
+```
+
+```bash
+cd grammarllm
+pip install -r requirements.txt
+```
+
+---
+
 ## 🔍 Use Cases
 
 ### 1. 🔮 Classification
