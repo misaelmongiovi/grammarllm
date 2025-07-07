@@ -31,7 +31,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from grammarllm.main import generate_grammar_parameters, generate_text
 from grammarllm.utils.grammar_utils import get_parsing_table_and_map_tt
 from grammarllm.utils.logger import setup_logging
-from grammarllm.utils.toolbox import create_prompt, CHAT_TEMPALTE 
+from grammarllm.utils.toolbox import create_prompt, CHAT_TEMPLATE 
 
 def main():
     setup_logging()
@@ -144,6 +144,9 @@ def main():
         examples=examples
         )
 
+    model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
+    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
+
     pars_table, map_terminal_tokens = get_parsing_table_and_map_tt(tokenizer, productions)
 
     LogitProcessor, Streamer = generate_grammar_parameters(
@@ -175,7 +178,7 @@ def main():
         'IRI': ["< URI >"],
         'BLANKNODE': ["<<_:>> NAME"],
         'LITERAL': ["\" STRING \" DESCRIPTION_LANG"],
-        'DESCRIPTION_LANG': ["( ^^ IRI )", "( @ LANGTAG )", "ε"],
+        'DESCRIPTION_LANG': ["^^ IRI", "@ LANGTAG", "ε"],
 
         'URI': [
             # People
@@ -194,7 +197,7 @@ def main():
             "<<http://www.w3.org/2001/XMLSchema#string>>"
         ],
 
-        'STRING':["alfanum STRING"],
+        'STRING':["alfanum STRING", "ε"],
         'NAME': ["ids NAME_C"],
         'NAME_C': ["idc NAME_C", "ε"],
 
@@ -234,53 +237,52 @@ def main():
         }
 
 
-    system_prompt = """You are an assistant that converts natural language sentences into RDF triples following this rules:
+    system_prompt = """You are an assistant that converts natural language sentences into RDF triples syntax.
 
-            RDF Triple Generation Rules — URIs, Literals, and Blank Nodes:
+    Follow these rules:
 
-            1. Use a URI (<...>) for:
-            - Identifiable entities (people, properties, concepts).
-            - Example:
-                <http://example.org/people/MarioRossi> <http://example.org/properties/hasFriend> <http://example.org/people/LuisaVerdi> .
+    1. Use URIs (`<...>`) for:
+    - Identifiable entities such as people, properties, or concepts.
+    - Example:
+        <http://example.org/people/MarioRossi> <http://example.org/properties/hasFriend> <http://example.org/people/LuisaVerdi> .
 
-            2. Use a literal (in quotes) for:
-            - Textual values (professions, names, cities).
-            - Numbers, dates, booleans, etc., with appropriate datatypes or language tags.
-            - Examples:
-                "developer"@en
-                "40"^^<http://www.w3.org/2001/XMLSchema#integer>
+    2. Use literals (`"..."`) for:
+    - Plain values such as professions, cities, names, numbers, dates, or booleans.
+    - Add datatypes (`^^<...>`) or language tags (`@lang`) if needed.
+    - Examples:
+        "engineer"@en  
+        "40"^^<http://www.w3.org/2001/XMLSchema#integer>
 
-            3. Use a blank node (_:label) **only if**:
-            - The object is unnamed and has structure (i.e., internal properties).
-            - Example:
-                <http://example.org/people/MarioRossi> <http://example.org/properties/hasAddress> _:b1 .
-                _:b1 <http://example.org/properties/street> "Via Roma" .
-                _:b1 <http://example.org/properties/city> "Milano" .
-            
-        Do not use a blank node for plain values (e.g "engineer"). Use a string literal instead.\n\n
+    3. Use blank nodes (`_:`) only if:
+    - The object is anonymous and has internal structure (i.e., it has its own properties).
+    - Example:
+        <http://example.org/people/MarioRossi> <http://example.org/properties/hasAddress> _:b1 .
+        _:b1 <http://example.org/properties/street> "Via Roma" .
+        _:b1 <http://example.org/properties/city> "Milano" .
 
-        Now use the following examples to generate clean and correct RDF triples from user input.
-    """
+    Never use a blank node (`_:`) for simple values like "engineer" or "teacher". Use a literal (`"..."`) instead.
+
+    Now use the following examples to generate clean and correct RDF triples from user input."""
 
     examples = [
         {"role": "user", "content": "Mario Rossi is 40 years old."},
-        {"role": "assistant", "content": "<http://example.org/people/MarioRossi><http://example.org/properties/hasAge>\"40\"^^<http://www.w3.org/2001/XMLSchema#integer>."},
+        {"role": "assistant", "content": "<http://example.org/people/MarioRossi> <http://example.org/properties/hasAge> \"40\" ^^<http://www.w3.org/2001/XMLSchema#integer> ."},
 
         {"role": "user", "content": "Luisa Verdi is an engineer."},
-        {"role": "assistant", "content": "<http://example.org/people/LuisaVerdi><http://example.org/properties/hasProfession>\"engineer\"@en."},
+        {"role": "assistant", "content": "<http://example.org/people/LuisaVerdi> <http://example.org/properties/hasProfession> \"engineer\" @en ."},
 
         {"role": "user", "content": "Giovanni Bianchi earns 55000."},
-        {"role": "assistant", "content": "<http://example.org/people/GiovanniBianchi><http://example.org/properties/hasSalary>\"55000\"^^<http://www.w3.org/2001/XMLSchema#decimal>."},
+        {"role": "assistant", "content": "<http://example.org/people/GiovanniBianchi> <http://example.org/properties/hasSalary> \"55000\" ^^<http://www.w3.org/2001/XMLSchema#decimal> ."},
 
         {"role": "user", "content": "Mario Rossi has an anonymous node as a contact."},
-        {"role": "assistant", "content": "<http://example.org/people/MarioRossi><http://example.org/properties/hasContact>_:ids."},
+        {"role": "assistant", "content": "<http://example.org/people/MarioRossi> <http://example.org/properties/hasContact> _:ids ."},
 
-        {"role": "user", "content": "Mario has the profession of teacher."},
-        {"role": "assistant", "content": "<http://example.org/people/MarioRossi><http://example.org/properties/hasProfession>\"teacher\"@en."}
+        {"role": "user", "content": "Mario Rossi has the profession of teacher."},
+        {"role": "assistant", "content": "<http://example.org/people/MarioRossi> <http://example.org/properties/hasProfession> \"teacher\" @en ."}
     ]
 
     prompt=create_prompt(
-        prompt_input="Giovanni Bianchi works as developer.",
+        prompt_input="Giovanni Bianchi was born 30 years ago.",
         system_prompt=system_prompt,
         examples=examples
     )
@@ -298,39 +300,9 @@ def main():
 
     LogitProcessor, Streamer = generate_grammar_parameters(tokenizer, pars_table, map_terminal_tokens)
     output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer)
-    print(output) # Example output: "(https)"
+    print(output) # Example output: "<http://example.org/people/GiovanniBianchi><http://example.org/properties/hasAge>"30"^^<http://www.w3.org/2001/XMLSchema#integer>."
   
 ```
-
----
-
-## ⚙️ API Overview
-
-### `generate_grammar_parameters(tokenizer, pars_tab, map_terminal_tokens)`
-
-Creates grammar constraints from the parsing table and terminal mappings.
-
-**Arguments:**
-
-* `tokenizer`: a Hugging Face tokenizer
-* `pars_tab`: parsing table returned by `get_parsing_table_and_map_tt()`
-* `map_terminal_tokens`: terminal → token/regex mapping returned by `get_parsing_table_and_map_tt()`
-
-**Returns:**
-
-* `LogitProcessor`, `Streamer` — to be passed to `generate_text()`
-
----
-
-### `generate_text(...)`
-
-Generates grammar-constrained text.
-
-**Main arguments:**
-
-* `model`, `tokenizer`, `text`
-* `logit_processor`, `streamer`
-* Options to control length, sampling, and generation behavior
 
 ---
 
@@ -396,7 +368,7 @@ All contributions are welcome: bug reports, feature requests, improvements, or d
 
 ## 📄 License
 
-\[Insert license type here, e.g., MIT, Apache-2.0]
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
