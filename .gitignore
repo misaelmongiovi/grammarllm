@@ -3,3 +3,5 @@ grammarllm/utils/gloss_class.py
 grammarllm/utils/examples.py
 .DS_Store
 grammarllm/scripts/grammar_generation_old.py
+grammarllm/grammarllm.egg-info
+grammarllm/dist

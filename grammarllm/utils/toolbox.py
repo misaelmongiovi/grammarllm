@@ -1,4 +1,4 @@
-CHAT_TEMPALTE = """
+chat_template = """
 {%- for message in messages %}
     {{- '<|' + message['role'] + '|>\n' }}
     {{- message['content'].strip() + eos_token + '\n' }}

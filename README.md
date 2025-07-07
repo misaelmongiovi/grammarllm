@@ -1,7 +1,7 @@
 # ⭐️ GrammarLLM — Grammar Constrained Natural Language Generation
 
 **GrammarLLM** is a powerful Python library for **grammar-constrained text generation**, built on top of pre-trained Transformer models.
-It allows you to define and apply constraints using grammars and regex, ideal for classification, vocabulary restriction, and structured generation.
+It allows you to define and apply constraints via formal grammars, ideal for classification, vocabulary restriction, and structured generation.
 
 ---
 
@@ -31,7 +31,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from grammarllm.main import generate_grammar_parameters, generate_text
 from grammarllm.utils.grammar_utils import get_parsing_table_and_map_tt
 from grammarllm.utils.logger import setup_logging
-from grammarllm.utils.toolbox import create_prompt, CHAT_TEMPLATE 
+from grammarllm.utils.toolbox import create_prompt, chat_template 
 
 def main():
     setup_logging()
@@ -75,7 +75,7 @@ def main():
         tokenizer, pars_table, map_terminal_tokens
     )
 
-    output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer)
+    output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer, chat_template)
     print(output)  # → "negative sad"
 ```
 
@@ -88,7 +88,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from grammarllm.main import generate_grammar_parameters, generate_text
 from grammarllm.utils.grammar_utils import get_parsing_table_and_map_tt
 from grammarllm.utils.logger import setup_logging
-from grammarllm.utils.toolbox import create_prompt, CHAT_TEMPALTE 
+from grammarllm.utils.toolbox import create_prompt, chat_template 
 
 def main():
     setup_logging()
@@ -153,7 +153,7 @@ def main():
         tokenizer, pars_table, map_terminal_tokens
     )
 
-    output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer)
+    output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer, chat_template)
     print(output)  # → "I'm happy"
 ```
 
@@ -166,7 +166,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from grammarllm.main import generate_grammar_parameters, generate_text
 from grammarllm.utils.grammar_utils import get_parsing_table_and_map_tt
 from grammarllm.utils.logger import setup_logging
-from grammarllm.utils.toolbox import create_prompt, CHAT_TEMPALTE 
+from grammarllm.utils.toolbox import create_prompt, chat_template 
 
 def main():
     setup_logging()
@@ -299,20 +299,24 @@ def main():
     )
 
     LogitProcessor, Streamer = generate_grammar_parameters(tokenizer, pars_table, map_terminal_tokens)
-    output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer)
+    output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer, chat_template)
     print(output) # Example output: "<http://example.org/people/GiovanniBianchi><http://example.org/properties/hasAge>"30"^^<http://www.w3.org/2001/XMLSchema#integer>."
   
 ```
 
 ---
 
-## 🎛 Customization Guide
+## 🛠 LL(prefix) Grammar Setup
 
-### 🧩 Production Rules
+GrammarLLm enforces syntactic correctness in linear time while maintaining expressiveness in grammar rule
+definition. To achieve this, we propose LL(prefix) a novel formalization that generalizes the LL(1) class of [CFG](https://en.wikipedia.org/wiki/Context-free_grammar) enabling the user to define grammars without delving into the details of LLM subword tokenization.
 
-* Use `<<some string>>` to **generate exact strings**
-* Symbols **without** `<<>>` are **terminals**, matched via regex
-* **Uppercase** symbols (e.g., `S*`) are **non-terminals**
+### ✍️ Notation
+
+* Use `<<some string>>` to **generate exact strings** the system handles tokenization
+* Symbols **without** `<<>>` are **terminals**, which will be mapped into a set of tokens via regex
+* **Uppercase** symbols (e.g., `A`,`B`,`C`) are **non-terminals**
+* **Uppercase** `S*` symbol is the start symbol.
 * Use `'ε'` for epsilon (empty) transitions
 
 ---
@@ -374,4 +378,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📫 Contact
 
-📧 Email: [gabriele.tuccio@phd.unict.it](mailto:gabriele.tuccio@phd.unict.it)
+📧 Email:  
+[gabriele.tuccio@phd.unict.it](mailto:gabriele.tuccio@phd.unict.it)  
+[misael.mongiovi@unict.it](mailto:misael.mongiovi@unict.it)

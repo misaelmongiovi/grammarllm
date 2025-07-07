@@ -13,7 +13,7 @@ import re
 #from grammarllm.utils.common_regex import regex_dict
 #from grammarllm.utils.examples import *
 #from grammarllm.utils.gloss_class import classes
-from grammarllm.utils.toolbox import create_prompt, CHAT_TEMPLATE 
+from grammarllm.utils.toolbox import create_prompt, chat_template 
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
@@ -62,7 +62,7 @@ def setup_logging():
         filemode='w+'  # Overwrites the file every time
     )
 
-def generate_text(model, tokenizer, text, logit_processor, streamer, max_new_tokens=400, do_sample=False, temperature=None, top_p=None, **kwargs):
+def generate_text(model, tokenizer, text, logit_processor, streamer, chat_template = None, max_new_tokens=400, do_sample=False, temperature=None, top_p=None, **kwargs):
     """
     Genera testo vincolato dalla grammatica, con configurazione dei parametri di generazione sicura.
 
@@ -78,17 +78,18 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, max_new_tok
         top_p: Top-p (nucleus sampling), usato solo se do_sample=True.
         **kwargs: Parametri aggiuntivi opzionali per model.generate().
     """
-
+    
     try:
         # TO USE WHEN CREATE PROMPT IS USED AND PROMPT IS A LIST
         if isinstance(text,list):
-            tokenizer.chat_template = CHAT_TEMPLATE
+            if chat_template is None:
+                raise ValueError("Chat template must be specified")
+            tokenizer.chat_template = chat_template
             tokenized_input = tokenizer.apply_chat_template(text, 
                                                         tokenize=True,
                                                         add_generation_prompt=True,
                                                         return_dict=True,
                                                         return_tensors="pt").to(model.device)
-            #logging.info(tokenized_input) #DEBUG
         else:
             tokenized_input = tokenizer(text, return_tensors="pt")
 
@@ -359,7 +360,7 @@ def main():
     )
 
     LogitProcessor, Streamer = generate_grammar_parameters(tokenizer, pars_table, map_terminal_tokens)
-    output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer)
+    output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer, chat_template)
     print(output) # Example output: "<http://example.org/people/GiovanniBianchi><http://example.org/properties/hasAge>"30"^^<http://www.w3.org/2001/XMLSchema#integer>."
   
 

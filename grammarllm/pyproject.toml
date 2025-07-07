@@ -1,0 +1,42 @@
+[project]
+name = "grammarllm"
+version = "0.2.6"
+description = """
+GrammarLLM is a powerful Python library for grammar-constrained text generation, built on top of pre-trained Transformer models.
+It allows you to define and apply constraints via formal grammars, ideal for classification, vocabulary restriction, and structured generation.
+"""
+readme = "README_PACKAGE.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Gabriele Tuccio", email = "gabriele.tuccio@phd.unict.it" },
+    { name = "Luana Bulla" },
+    { name = "Maria Madonia" },
+    { name = "Aldo Gangemi" },
+    { name = "Misael Mongiovì" }
+]
+dependencies = [
+    "regex",
+    "torch",
+    "tqdm",
+    "transformers>=4.30.0",
+    "setuptools",
+    "accelerate>=0.26.0",
+]
+license = "MIT"
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "Operating System :: OS Independent",
+    "Topic :: Text Processing :: Linguistic",
+]
+
+[tool.setuptools.packages.find]
+include = ["grammarllm"]
+exclude = ["temp"]
+
+[project.urls]
+Homepage = "https://github.com/misaelmongiovi/grammarllm"
+Repository = "https://github.com/misaelmongiovi/grammarllm"
+
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
