@@ -30,8 +30,9 @@ classifiers = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["grammarllm"]
-exclude = ["temp"]
+where = ["."]
+include = ["grammarllm*"]
+exclude = ["temp","__pycache__"]
 
 [project.urls]
 Homepage = "https://github.com/misaelmongiovi/grammarllm"

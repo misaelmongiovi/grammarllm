@@ -29,7 +29,67 @@ The package is currently available on Test PyPI. To install the library, use the
 pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple grammarllm
 ```
 
+
 ---
+
+## 📄 Core Components Documentation
+
+### `get_parsing_table_and_map_tt()`
+
+This function generates the essential components needed by `generate_grammar_parameters()`. It takes your grammar definition and optional regular expressions to prepare for constrained text generation.
+
+**Arguments:**
+
+* `tokenizer`: A Hugging Face tokenizer instance.
+* `productions`: Your grammar defined in JSON format. This is a **required** argument; if not provided, the function will raise an exception.
+* `regex_dict=None`: An optional dictionary containing regular expressions. Use this if your grammar's terminals need to be mapped to a set of tokens via regex.
+
+**Returns:**
+
+* `pars_tab`: The generated parsing table.
+* `map_terminal_tokens`: A mapping between terminals or tokens and their corresponding `token_id` sets. Terminals can map to multiple tokens using regular expressions, while individual tokens map to a single ID.
+
+Both `pars_tab` and `map_terminal_tokens` should be passed to `generate_grammar_parameters()`.
+
+---
+
+### `generate_grammar_parameters()`
+
+This function creates the two critical parameters, a `LogitProcessor` and a `Streamer`, that enable grammar-constrained generation. The `LogitProcessor` dynamically masks tokens that don't adhere to your grammar, while the `Streamer` updates the internal pushdown automaton as new tokens are generated.
+
+**Arguments:**
+
+* `tokenizer`: A Hugging Face tokenizer instance.
+* `pars_tab`: The parsing table returned by `get_parsing_table_and_map_tt()`.
+* `map_terminal_tokens`: The terminal-to-token mapping returned by `get_parsing_table_and_map_tt()`.
+
+**Returns:**
+
+* `LogitProcessor`: An object responsible for dynamic token masking based on the grammar.
+* `Streamer`: An object used to update the pushdown automaton during token generation.
+
+Both the `LogitProcessor` and `Streamer` should be passed to `generate_text()`.
+
+---
+
+### `generate_text()`
+
+This function generates text that adheres to your specified grammar constraints.
+
+**Main Arguments:**
+
+* `model`: The language model to use for generation.
+* `tokenizer`: The tokenizer associated with the model.
+* `text`: The initial prompt or input text.
+* `logit_processor`: The `LogitProcessor` object obtained from `generate_grammar_parameters()`.
+* `streamer`: The `Streamer` object obtained from `generate_grammar_parameters()`.
+
+**Additional Options:**
+
+* `chat_template`: Pass this argument if you need to provide examples and want to format the full prompt appropriately for a chat model.
+* Other options to control generation length, sampling strategies, and overall behavior.
+
+----
 ## 🔍 Use Cases
 
 ### 1. 🔮 Classification
@@ -383,12 +443,6 @@ Use custom regex keys as terminal symbols in your grammar productions.
 
 ---
 
-## 🤝 Contributing
-
-All contributions are welcome: bug reports, feature requests, improvements, or documentation updates.
-
----
-
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
@@ -398,7 +452,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📫 Contact
 
 📧 Email:  
-[gabriele.tuccio@phd.unict.it](mailto:gabriele.tuccio@phd.unict.it)  
+[gabriele.tuccio@phd.unict.it](mailto:gabriele.tuccio@phd.unict.it)
+[luana.bulla@phd.unict.it](mailto:luana.bulla@phd.unict.it)
 [misael.mongiovi@unict.it](mailto:misael.mongiovi@unict.it)
+
 
 

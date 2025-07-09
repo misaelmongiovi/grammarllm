@@ -19,12 +19,10 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
 
-def get_parsing_table_and_map_tt(tokenizer, productions=None, regex_dict=None):
+def get_parsing_table_and_map_tt(tokenizer, productions, regex_dict=None):
 
     processor = ProductionRuleProcessor(tokenizer=tokenizer)
     # Process the grammar productions
-    if productions is None:
-        raise ValueError("Productions cannot be None. Please provide a valid grammar.")
     final_grammar, tag_mapping = processor.process_full_grammar(productions)
 
     #add eos token to the grammar

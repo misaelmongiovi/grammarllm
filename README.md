@@ -381,7 +381,18 @@ Use custom regex keys as terminal symbols in your grammar productions.
 
 ## 🤝 Contributing
 
-All contributions are welcome: bug reports, feature requests, improvements, or documentation updates.
+To contribute, please follow these guidelines:
+
+**Bug Reports**: If you find a bug, please open an issue and provide detailed steps to reproduce it.
+
+**Feature Requests**: For new features or enhancements, please open an issue first to discuss the idea before starting development.
+
+- Code Contributions:
+- Fork the repository.
+- Create a new branch for your feature or bug fix.
+- Write your code and ensure it's well-documented and tested.
+- Commit your changes using descriptive commit messages.
+- Submit a pull request from your branch to the main branch, clearly explaining the purpose of your changes.
 
 ---
 
@@ -394,5 +405,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📫 Contact
 
 📧 Email:  
-[gabriele.tuccio@phd.unict.it](mailto:gabriele.tuccio@phd.unict.it)  
+[gabriele.tuccio@phd.unict.it](mailto:gabriele.tuccio@phd.unict.it)
+[luana.bulla@phd.unict.it](mailto:luana.bulla@phd.unict.it)
 [misael.mongiovi@unict.it](mailto:misael.mongiovi@unict.it)
+

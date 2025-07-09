@@ -1,20 +1,18 @@
-from grammarllm.scripts.grammar_generation import ProductionRuleProcessor
-from grammarllm.scripts.map_terminal_tokens import generate_token_maps
-from grammarllm.scripts.generate_LL1_parsing_table import parsing_table
+from .scripts.grammar_generation import ProductionRuleProcessor
+from .scripts.map_terminal_tokens import generate_token_maps
+from .scripts.generate_LL1_parsing_table import parsing_table
 
-from grammarllm.modules.BaseStreamer import BaseStreamer
-from grammarllm.modules.PushdownAutomaton import PushdownAutomaton
-from grammarllm.modules.SimpleLogitProcessor import MaskLogitsProcessor
+from .modules.BaseStreamer import BaseStreamer
+from .modules.PushdownAutomaton import PushdownAutomaton
+from .modules.SimpleLogitProcessor import MaskLogitsProcessor
 
 import logging
 import os
 
-def get_parsing_table_and_map_tt(tokenizer, productions=None, regex_dict=None):
+def get_parsing_table_and_map_tt(tokenizer, productions, regex_dict=None):
 
     processor = ProductionRuleProcessor(tokenizer=tokenizer)
     # Process the grammar productions
-    if productions is None:
-        raise ValueError("Productions cannot be None. Please provide a valid grammar.")
     final_grammar, tag_mapping = processor.process_full_grammar(productions)
 
     #add eos token to the grammar
