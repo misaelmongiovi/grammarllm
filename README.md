@@ -333,6 +333,7 @@ definition. To achieve this, we propose LL(prefix) a novel formalization that ge
 * **Uppercase** symbols (e.g., `A`,`B`,`C`) are **non-terminals**
 * **Uppercase** `S*` symbol is the start symbol.
 * Use `'ε'` for epsilon (empty) transitions
+* In JSON format, square brackets `[]` represent a production rule, and commas inside the brackets (e.g., `[A, B, C]`) serve the same purpose as the `|` (OR) operator in formal language notation.
 
 ---
 
@@ -371,11 +372,15 @@ regex_dict['regex_custom'] = new_regex
 
 Use custom regex keys as terminal symbols in your grammar productions.
 
+Important:
+Each key in regex_dict must follow the format 'regex_' + symbol_name, where symbol_name exactly matches the corresponding terminal symbol used in your grammar production rules.
+
 ---
 
 ## ⚠️ Limitations
 
 * ❌ Beam search is **not supported**
+* You cannot define multiple <<exact_string>> in the same rule
 
 ---
 

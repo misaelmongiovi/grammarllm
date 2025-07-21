@@ -82,7 +82,7 @@ class PushdownAutomaton:
         token = terminal
         stack = self.stack
         top = stack.pop()
-
+        
         # Se il top dello stack è una regola (non terminale), espanderla prima di confrontare
         if top in self.grammar:
             # Espande la regola e mette i simboli della produzione nello stack
