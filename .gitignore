@@ -7,3 +7,4 @@ grammarllm.egg-info
 dist
 lib_test.py
 collaboration
+MANIFEST.in
