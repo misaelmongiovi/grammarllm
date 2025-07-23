@@ -407,6 +407,26 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
+## 🖌 Citation 
+
+[![ACL 2025 Paper](https://img.shields.io/badge/ACL%202025-Paper-blue)](https://aclanthology.org/2025.findings-acl.177/)
+
+If you use this work, please cite:
+
+```bibtex
+@inproceedings{tuccio2025grammarllm,
+  title     = {GRAMMAR-LLM: Grammar-Constrained Natural Language Generation},
+  author    = {Tuccio, Gabriele and Bulla, Luana and Madonia, Maria and Gangemi, Aldo and Mongiovì, Misael},
+  booktitle = {Findings of the Association for Computational Linguistics: ACL 2025},
+  year      = {2025},
+  pages     = {3412--3422},
+  address   = {Vienna, Austria},
+  url       = {https://aclanthology.org/2025.findings-acl.177/}
+}
+```
+
+---
+
 ## 📫 Contact
 
 📧 Email:  
