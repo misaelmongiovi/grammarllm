@@ -21,6 +21,10 @@ class MaskLogitsProcessor(LogitsProcessor):
         logging.info(log_message)
 
     def __call__(self, input_ids, scores):
+        
+        # Applica la temperatura se specificata
+        temperature = getattr(self, "temperature", 1.0)
+        scores = scores / temperature
         logging.info(f"Stack: {self.pda.stack[::-1]}") 
         
         valid_tokens = self.pda.get_tokens()
