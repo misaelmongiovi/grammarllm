@@ -8,3 +8,6 @@ dist
 lib_test.py
 collaboration
 MANIFEST.in
+__pycache__/
+*.pyc
+*.pyc
