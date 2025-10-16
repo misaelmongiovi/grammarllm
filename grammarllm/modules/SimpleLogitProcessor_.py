@@ -1,7 +1,8 @@
-
 import logging
 from transformers import LogitsProcessor
 import torch
+from scipy.stats import entropy
+import numpy as np
 
 #LOGIT PROCESSOR CHE FILTRA NON UFFICIALE
 
@@ -9,6 +10,7 @@ class MaskLogitsProcessor(LogitsProcessor):
     def __init__(self, tokenizer, pda):
         self.tokenizer = tokenizer
         self.pda = pda
+        self.points = []  # Lista per memorizzare i punti (x, y)
 
     def log_top_10_scores(self, filtered_probabilities, prefix):
         top_probs, top_indices = torch.topk(filtered_probabilities, 10, dim=1)
@@ -45,9 +47,56 @@ class MaskLogitsProcessor(LogitsProcessor):
         logging.info(log_message)
         
         # Log cumulative probability mass
-        cumulative_prob_mass = valid_probs.sum().item()
-        logging.info(f"{prefix} - Cumulative Probability Mass of Valid Tokens: {cumulative_prob_mass:.6f}")
+        cumulative_prob_mass_valid = valid_probs.sum().item()
+        cumulative_prob_mass_invalid = 1 - cumulative_prob_mass_valid
 
+        logging.info(f"{prefix} - Cumulative Probability Mass of Valid Tokens: {cumulative_prob_mass_valid:.6f}")
+        logging.info(f"{prefix} - Cumulative Probability Mass of Invalid Tokens: {cumulative_prob_mass_invalid:.6f}")
+
+        return cumulative_prob_mass_valid, cumulative_prob_mass_invalid
+
+    def log_invalid_tokens_entropy(self, probabilities, valid_tokens, prefix):
+        """
+        Calcola l'entropia normalizzata (0..1) della distribuzione dei token non validi.
+        Usa scipy.stats.entropy che normalizza automaticamente pk.
+        """
+        batch_size, vocab_size = probabilities.shape
+        device = probabilities.device
+
+        # Maschera: True = invalid token
+        mask = torch.ones(vocab_size, dtype=torch.bool, device=device)
+        if valid_tokens:
+            mask[valid_tokens] = False
+
+        invalid_indices = torch.nonzero(mask, as_tuple=False).squeeze(-1)
+        if invalid_indices.numel() == 0:
+            logging.info(f"{prefix} - Normalized invalid entropy: 0.000000 (no invalid tokens)")
+            return 0.0
+
+        # Prendiamo il primo elemento del batch (come gli altri log)
+        invalid_probs = probabilities[0, invalid_indices].cpu().numpy()
+
+        if invalid_probs.sum() <= 0.0:
+            logging.info(f"{prefix} - Normalized invalid entropy: 0.000000 (deleted mass zero)")
+            return 0.0
+
+        # Calcola l'entropia di Shannon (scipy normalizza pk da solo)
+        H = entropy(invalid_probs)  # in nats (base e)
+
+        # Numero di token invalidi con prob > 0
+        k = np.count_nonzero(invalid_probs)
+
+        if k <= 1:
+            normalized_entropy = 0.0
+        else:
+            H_max = np.log(k)
+            normalized_entropy = float(H / H_max)
+            normalized_entropy = max(0.0, min(1.0, normalized_entropy))  # clamp
+
+        logging.info(f"{prefix} - Normalized invalid entropy: {normalized_entropy:.6f}")
+        return normalized_entropy
+
+    
 
     def __call__(self, input_ids, scores):
 
@@ -63,15 +112,18 @@ class MaskLogitsProcessor(LogitsProcessor):
             logging.info("\n\nLogitsProcessor attivato!")  
             original_probabilities = torch.softmax(scores, dim=-1)
             self.log_top_10_scores(original_probabilities, prefix="Original")
-            self.log_valid_tokens_prob_mass(original_probabilities, valid_tokens, prefix="Original Valid Tokens")
+            _, cumulative_prob_mass_invalid = self.log_valid_tokens_prob_mass(original_probabilities, valid_tokens, prefix="Original Valid Tokens")
+            
+            # NUOVO: Calcola e logga l'entropia dei token non validi
+            normalized_entropy = self.log_invalid_tokens_entropy(original_probabilities, valid_tokens, prefix="Original")
 
+            # Aggiungi il punto (x, y) alla lista dei punti
+            self.points.append((normalized_entropy, cumulative_prob_mass_invalid))
 
             filtered_scores = scores.clone()
-
             filtered_scores = torch.full_like(scores, -float('inf'))
             filtered_scores[:, valid_tokens_ids] = scores[:, valid_tokens_ids]
             filtered_probabilities = torch.softmax(filtered_scores, dim=-1)
-
 
             self.log_top_10_scores(filtered_probabilities, prefix="Filtered")
 
@@ -87,7 +139,10 @@ class MaskLogitsProcessor(LogitsProcessor):
                 logging.info("LogitsProcessor attivato!")  
                 original_probabilities = torch.softmax(scores, dim=-1)
                 self.log_top_10_scores(original_probabilities, prefix="Original")
-                self.log_valid_tokens_prob_mass(original_probabilities,valid_tokens, prefix="Original Valid Tokens")
+                self.log_valid_tokens_prob_mass(original_probabilities, valid_tokens, prefix="Original Valid Tokens")
+                
+                # NUOVO: Calcola e logga l'entropia dei token non validi
+                self.log_invalid_tokens_entropy(original_probabilities, valid_tokens_ids, prefix="Original")
 
                 # # Applica la stessa logica per EOS
                 filtered_scores = scores.clone()
