@@ -10,3 +10,5 @@ collaboration
 MANIFEST.in
 __pycache__/
 *.pyc
+experiments/
+collaboration/
