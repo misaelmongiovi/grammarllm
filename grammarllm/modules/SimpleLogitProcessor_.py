@@ -11,6 +11,7 @@ class MaskLogitsProcessor(LogitsProcessor):
         self.tokenizer = tokenizer
         self.pda = pda
         self.points = []  # Lista per memorizzare i punti (x, y)
+        self.preserved_mass = []  # nuovo attributo per salvare l'ultima massa valida
 
     def log_top_10_scores(self, filtered_probabilities, prefix):
         top_probs, top_indices = torch.topk(filtered_probabilities, 10, dim=1)
@@ -35,7 +36,8 @@ class MaskLogitsProcessor(LogitsProcessor):
         """
         if not valid_tokens:
             logging.info(f"{prefix} - No valid tokens available.")
-            return
+            # Ritorna 0 per valid e 1 per invalid
+            return 0.0, 1.0
         
         # Estrai le probabilità dei token validi
         valid_probs = probabilities[:, valid_tokens]
@@ -114,8 +116,9 @@ class MaskLogitsProcessor(LogitsProcessor):
             logging.info("\n\nLogitsProcessor attivato!")  
             original_probabilities = torch.softmax(scores, dim=-1)
             self.log_top_10_scores(original_probabilities, prefix="Original")
-            _, cumulative_prob_mass_invalid = self.log_valid_tokens_prob_mass(original_probabilities, valid_tokens, prefix="Original Valid Tokens")
+            cumulative_prob_mass_valid , cumulative_prob_mass_invalid = self.log_valid_tokens_prob_mass(original_probabilities, valid_tokens, prefix="Original Valid Tokens")
             
+            self.preserved_mass.append(cumulative_prob_mass_valid)
             # NUOVO: Calcola e logga l'entropia dei token non validi
             normalized_entropy = self.log_invalid_tokens_entropy(original_probabilities, valid_tokens, prefix="Original")
 
@@ -141,8 +144,9 @@ class MaskLogitsProcessor(LogitsProcessor):
                 logging.info("LogitsProcessor attivato!")  
                 original_probabilities = torch.softmax(scores, dim=-1)
                 self.log_top_10_scores(original_probabilities, prefix="Original")
-                self.log_valid_tokens_prob_mass(original_probabilities, valid_tokens, prefix="Original Valid Tokens")
+                cumulative_prob_mass_valid, _ = self.log_valid_tokens_prob_mass(original_probabilities, valid_tokens, prefix="Original Valid Tokens")
                 
+                self.preserved_mass.append(cumulative_prob_mass_valid)
                 # NUOVO: Calcola e logga l'entropia dei token non validi
                 self.log_invalid_tokens_entropy(original_probabilities, valid_tokens_ids, prefix="Original")
 
