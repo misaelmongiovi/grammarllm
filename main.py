@@ -209,7 +209,7 @@ def main():
     #               }
     productions = { 'S*': ["<<positive>> A", "<<negative>> B", "<<neutral>> C"],
                     'A': ["<< happy>>", "<< peaceful>>", "<< joyful>>"],
-                    'B': ['<< sad>>', '<< angry>>', '<< frustrated>>'],
+                    'B': ['<< gloomy>>', '<< angry>>', '<< frustrated>>'],
                     'C': ['<< calm>>', '<< indifferent>>', '<< unemotional>>']
                   }
     # Define system prompt and examples
@@ -240,6 +240,8 @@ def main():
     # Initialize tokenizer
     model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
     tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
+    #model = AutoModelForCausalLM.from_pretrained("gpt2")
+    #tokenizer = AutoTokenizer.from_pretrained("gpt2")
 
     # Generate grammar parameters
     pars_table, map_terminal_tokens = get_parsing_table_and_map_tt(
@@ -252,11 +254,14 @@ def main():
     
     # Set temperature for LogitProcessor
     LogitProcessor.temperature = 1.0 
-    output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer, chat_template, do_sample=True, top_k=10)
+    output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer, chat_template, do_sample=False)
     print(output) # Example output: "negative sad"
 
     #Plotta la traiettoria usando i punti raccolti
-    plot_invalid_trajectory(LogitProcessor.points)
+    #plot_invalid_trajectory(LogitProcessor.points)
+    a = LogitProcessor.preserved_mass
+    print(a)#[0.9560056328773499, 0.046188708394765854, 0.0]
+
 
 if __name__ == "__main__":
     main()

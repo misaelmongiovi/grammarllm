@@ -19,15 +19,15 @@ class BaseStreamer:
         generated_token_id = value[0]
         #TO UNCOMMENT ONLY IF YOU WANT TO SEE THE ID TOKENS OF YOUR PROMPT 
         #logging.info(f"Valore ricevuto in put: {generated_token_id}") #DEBUG
-        #logging.info(f"Valore ricevuto in put:{generated_token_id}") #DEBUG
+        logging.info(f"Valore ricevuto in put:{generated_token_id}") #DEBUG
 
         if not self.is_first_call:
-
-            if generated_token_id == self.tokenizer.eos_token_id:
+            # CORREZIONE: Estrai il valore scalare PRIMA del confronto
+            token = generated_token_id.item()
+            if token == self.tokenizer.eos_token_id:
                 logging.info("eos generato! Interrompendo la generazione.")
                 return
 
-            token =  generated_token_id.item()
             self.pda.next_state(token)  # Esegui il next_state del PDA
             
         self.is_first_call = False
@@ -36,4 +36,5 @@ class BaseStreamer:
     def end(self):
         """Function that is called by `.generate()` to signal the end of generation"""
         logging.info("end generation")
+        self.is_first_call = True  # Reset per la prossima generazione
         
