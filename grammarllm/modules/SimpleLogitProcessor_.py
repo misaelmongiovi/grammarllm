@@ -22,7 +22,8 @@ class MaskLogitsProcessor(LogitsProcessor):
         for token, prob in zip(top_token_labels, top_probs):
             log_message += f"Token: {token}, Probability: {prob:.6f}\n" 
         logging.info(log_message)
-    
+
+
     def log_valid_tokens_prob_mass(self, probabilities, valid_tokens, prefix):
         """
         Log each valid token's probability and the cumulative probability mass.
@@ -39,13 +40,14 @@ class MaskLogitsProcessor(LogitsProcessor):
         # Estrai le probabilità dei token validi
         valid_probs = probabilities[:, valid_tokens]
         
-        # Log individual token probabilities
-        log_message = f"{prefix} - Valid Tokens and Their Probability Mass:\n"
-        for token_id, prob in zip(valid_tokens, valid_probs[0].tolist()):
-            token_str = self.tokenizer.convert_ids_to_tokens([token_id])[0]
-            log_message += f"Token: {token_str}, Probability: {prob:.6f}\n"
-        logging.info(log_message)
-        
+        # # Log individual token probabilities
+        # log_message = f"{prefix} - Valid Tokens and Their Probability Mass:\n"
+        # for token_id, prob in zip(valid_tokens, valid_probs[0].tolist()):
+        #     token_str = self.tokenizer.convert_ids_to_tokens([token_id])[0]
+        #     log_message += f"Token: {token_str}, Probability: {prob:.6f}\n"
+        # logging.info(log_message)
+        #self.log_top_10_scores(valid_probs, prefix=f"{prefix} - Valid Tokens Top 10")
+
         # Log cumulative probability mass
         cumulative_prob_mass_valid = valid_probs.sum().item()
         cumulative_prob_mass_invalid = 1 - cumulative_prob_mass_valid
