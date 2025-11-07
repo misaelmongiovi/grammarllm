@@ -4,90 +4,85 @@ import torch
 from scipy.stats import entropy
 import numpy as np
 
-#LOGIT PROCESSOR CHE FILTRA NON UFFICIALE
-
 class MaskLogitsProcessor(LogitsProcessor):
+    """
+    LogitsProcessor che filtra token basandosi su un PDA.
+    Gestisce correttamente la generazione di EOS e raccoglie metriche.
+    """
     def __init__(self, tokenizer, pda):
         self.tokenizer = tokenizer
         self.pda = pda
-        self.points = []  # Lista per memorizzare i punti (x, y)
-        self.preserved_mass = []  # nuovo attributo per salvare l'ultima massa valida
+        self.generation_ended = False  # Flag per terminazione generazione
+        self.points = []  # Metriche: (entropy, invalid_mass)
+        self.preserved_mass = []  # Storia della massa preservata
+        self.temperature = 1.0  # Temperatura di default
+
+    def reset(self):
+        """Resetta lo stato per una nuova generazione."""
+        self.generation_ended = False
+        self.points = []
+        self.preserved_mass = []
 
     def log_top_10_scores(self, filtered_probabilities, prefix):
+        """Log dei top 10 token con le loro probabilità."""
         top_probs, top_indices = torch.topk(filtered_probabilities, 10, dim=1)
         top_token_ids = top_indices[0].tolist()
         top_probs = top_probs[0].tolist()
         top_token_labels = self.tokenizer.convert_ids_to_tokens(top_token_ids)
 
-        log_message = f"{prefix}:\nTop 10 Tokens!!!\n"
+        log_message = f"{prefix}:\nTop 10 Tokens:\n"
         for token, prob in zip(top_token_labels, top_probs):
-            log_message += f"Token: {token}, Probability: {prob:.6f}\n" 
+            log_message += f"  {token}: {prob:.6f}\n" 
         logging.info(log_message)
-
 
     def log_valid_tokens_prob_mass(self, probabilities, valid_tokens, prefix):
         """
-        Log each valid token's probability and the cumulative probability mass.
+        Calcola e logga la massa di probabilità dei token validi/invalidi.
         
-        Args:
-            probabilities (torch.Tensor): Tensor of shape (batch_size, vocab_size) with probabilities.
-            valid_tokens (List[int]): List of valid token IDs.
-            prefix (str): String prefix for logging.
+        Returns:
+            tuple: (valid_mass, invalid_mass)
         """
         if not valid_tokens:
-            logging.info(f"{prefix} - No valid tokens available.")
-            # Ritorna 0 per valid e 1 per invalid
+            logging.info(f"{prefix} - Nessun token valido disponibile.")
             return 0.0, 1.0
         
-        # Estrai le probabilità dei token validi
         valid_probs = probabilities[:, valid_tokens]
-        
-        # # Log individual token probabilities
-        # log_message = f"{prefix} - Valid Tokens and Their Probability Mass:\n"
-        # for token_id, prob in zip(valid_tokens, valid_probs[0].tolist()):
-        #     token_str = self.tokenizer.convert_ids_to_tokens([token_id])[0]
-        #     log_message += f"Token: {token_str}, Probability: {prob:.6f}\n"
-        # logging.info(log_message)
-        #self.log_top_10_scores(valid_probs, prefix=f"{prefix} - Valid Tokens Top 10")
-
-        # Log cumulative probability mass
         cumulative_prob_mass_valid = valid_probs.sum().item()
-        cumulative_prob_mass_invalid = 1 - cumulative_prob_mass_valid
+        cumulative_prob_mass_invalid = 1.0 - cumulative_prob_mass_valid
 
-        logging.info(f"{prefix} - Cumulative Probability Mass of Valid Tokens: {cumulative_prob_mass_valid:.6f}")
-        logging.info(f"{prefix} - Cumulative Probability Mass of Invalid Tokens: {cumulative_prob_mass_invalid:.6f}")
+        logging.info(f"{prefix} - Massa valida: {cumulative_prob_mass_valid:.6f}, "
+                    f"Massa invalida: {cumulative_prob_mass_invalid:.6f}")
 
         return cumulative_prob_mass_valid, cumulative_prob_mass_invalid
 
     def log_invalid_tokens_entropy(self, probabilities, valid_tokens, prefix):
         """
-        Calcola l'entropia normalizzata (0..1) della distribuzione dei token non validi.
-        Usa scipy.stats.entropy che normalizza automaticamente pk.
+        Calcola l'entropia normalizzata (0..1) della distribuzione dei token invalidi.
+        
+        Returns:
+            float: Entropia normalizzata tra 0 e 1
         """
         batch_size, vocab_size = probabilities.shape
         device = probabilities.device
 
-        # Maschera: True = invalid token
+        # Crea maschera per token invalidi
         mask = torch.ones(vocab_size, dtype=torch.bool, device=device)
         if valid_tokens:
             mask[valid_tokens] = False
 
         invalid_indices = torch.nonzero(mask, as_tuple=False).squeeze(-1)
         if invalid_indices.numel() == 0:
-            logging.info(f"{prefix} - Normalized invalid entropy: 0.000000 (no invalid tokens)")
+            logging.info(f"{prefix} - Entropia normalizzata invalidi: 0.000000 (nessun token invalido)")
             return 0.0
 
-        # Prendiamo il primo elemento del batch (come gli altri log)
         invalid_probs = probabilities[0, invalid_indices].cpu().numpy()
 
         if invalid_probs.sum() <= 0.0:
-            logging.info(f"{prefix} - Normalized invalid entropy: 0.000000 (deleted mass zero)")
+            logging.info(f"{prefix} - Entropia normalizzata invalidi: 0.000000 (massa nulla)")
             return 0.0
 
-        # Calcola l'entropia di Shannon (scipy normalizza pk da solo)
-        H = entropy(invalid_probs)  # in nats (base e)
-
-        # Numero di token invalidi con prob > 0
+        # Calcola entropia di Shannon
+        H = entropy(invalid_probs)  # in nats
         k = np.count_nonzero(invalid_probs)
 
         if k <= 1:
@@ -95,70 +90,102 @@ class MaskLogitsProcessor(LogitsProcessor):
         else:
             H_max = np.log(k)
             normalized_entropy = float(H / H_max)
-            normalized_entropy = max(0.0, min(1.0, normalized_entropy))  # clamp
+            normalized_entropy = max(0.0, min(1.0, normalized_entropy))
 
-        logging.info(f"{prefix} - Normalized invalid entropy: {normalized_entropy:.6f}")
+        logging.info(f"{prefix} - Entropia normalizzata invalidi: {normalized_entropy:.6f}")
         return normalized_entropy
 
-    
-
     def __call__(self, input_ids, scores):
-
-        # Applica la temperatura se specificata
-        temperature = getattr(self, "temperature", 1.0)
-        scores = scores / temperature
-        logging.info(f"Stack: {self.pda.stack[::-1]}") 
+        """
+        Filtra i logits basandosi sui token validi dal PDA.
         
-        valid_tokens = self.pda.get_tokens()
-        valid_tokens_ids = valid_tokens
-
-        if valid_tokens_ids:
-            logging.info("\n\nLogitsProcessor attivato!")  
-            original_probabilities = torch.softmax(scores, dim=-1)
-            self.log_top_10_scores(original_probabilities, prefix="Original")
-            cumulative_prob_mass_valid , cumulative_prob_mass_invalid = self.log_valid_tokens_prob_mass(original_probabilities, valid_tokens, prefix="Original Valid Tokens")
+        Args:
+            input_ids: Sequenza di token generati finora
+            scores: Logits non normalizzati per il prossimo token
             
-            self.preserved_mass.append(cumulative_prob_mass_valid)
-            # NUOVO: Calcola e logga l'entropia dei token non validi
-            normalized_entropy = self.log_invalid_tokens_entropy(original_probabilities, valid_tokens, prefix="Original")
-
-            # Aggiungi il punto (x, y) alla lista dei punti
-            self.points.append((normalized_entropy, cumulative_prob_mass_invalid))
-
-            filtered_scores = scores.clone()
+        Returns:
+            torch.Tensor: Logits filtrati
+        """
+        # Applica temperatura
+        scores = scores / self.temperature
+        
+        # Se la generazione è già terminata, lascia passare tutto
+        if self.generation_ended:
+            return scores
+        
+        logging.info(f"\n{'='*50}")
+        logging.info(f"Stack PDA: {self.pda.stack[::-1]}")
+        
+        # Ottieni token validi dal PDA
+        valid_tokens = self.pda.get_tokens()
+        
+        # CASO 1: Ci sono token validi - Applica filtro normale
+        if valid_tokens:
+            logging.info(f"Token validi disponibili: {len(valid_tokens)}")
+            
+            # Calcola metriche originali
+            original_probabilities = torch.softmax(scores, dim=-1)
+            self.log_top_10_scores(original_probabilities, prefix="ORIGINALE")
+            
+            valid_mass, invalid_mass = self.log_valid_tokens_prob_mass(
+                original_probabilities, valid_tokens, prefix="ORIGINALE"
+            )
+            self.preserved_mass.append(valid_mass)
+            
+            normalized_entropy = self.log_invalid_tokens_entropy(
+                original_probabilities, valid_tokens, prefix="ORIGINALE"
+            )
+            self.points.append((normalized_entropy, invalid_mass))
+            
+            # Applica filtro
             filtered_scores = torch.full_like(scores, -float('inf'))
-            filtered_scores[:, valid_tokens_ids] = scores[:, valid_tokens_ids]
+            filtered_scores[:, valid_tokens] = scores[:, valid_tokens]
+            
             filtered_probabilities = torch.softmax(filtered_scores, dim=-1)
-
-            self.log_top_10_scores(filtered_probabilities, prefix="Filtered")
-
+            self.log_top_10_scores(filtered_probabilities, prefix="FILTRATO")
+            
             return filtered_scores
-
+        
+        # CASO 2: Nessun token valido - Controlla se stack è vuoto
         else:
-            logging.info(f"Valid tokens è vuoto!{valid_tokens}")
+            logging.info("Nessun token valido dal PDA")
+            
             if self.pda.eos():
-                logging.info("stack vuoto quindi eos True")
-                valid_tokens_ids = [self.tokenizer.eos_token_id]
-
-                logging.info("\n\nposso generare solo eos perché stack vuoto!")
-                logging.info("LogitsProcessor attivato!")  
-                original_probabilities = torch.softmax(scores, dim=-1)
-                self.log_top_10_scores(original_probabilities, prefix="Original")
-                cumulative_prob_mass_valid, _ = self.log_valid_tokens_prob_mass(original_probabilities, valid_tokens, prefix="Original Valid Tokens")
+                # Stack vuoto: forza generazione EOS
+                logging.info("Stack PDA vuoto -> Forzando generazione EOS")
                 
-                self.preserved_mass.append(cumulative_prob_mass_valid)
-                # NUOVO: Calcola e logga l'entropia dei token non validi
-                self.log_invalid_tokens_entropy(original_probabilities, valid_tokens_ids, prefix="Original")
-
-                # # Applica la stessa logica per EOS
-                filtered_scores = scores.clone()
+                eos_token_id = self.tokenizer.eos_token_id
+                original_probabilities = torch.softmax(scores, dim=-1)
+                
+                self.log_top_10_scores(original_probabilities, prefix="ORIGINALE (pre-EOS)")
+                
+                valid_mass, _ = self.log_valid_tokens_prob_mass(
+                    original_probabilities, [eos_token_id], prefix="ORIGINALE (pre-EOS)"
+                )
+                self.preserved_mass.append(valid_mass)
+                
+                self.log_invalid_tokens_entropy(
+                    original_probabilities, [eos_token_id], prefix="ORIGINALE (pre-EOS)"
+                )
+                
+                # Forza EOS
                 filtered_scores = torch.full_like(scores, -float('inf'))
-                filtered_scores[:, valid_tokens_ids] = scores[:, valid_tokens_ids]
-
+                filtered_scores[:, eos_token_id] = scores[:, eos_token_id]
+                
                 filtered_probabilities = torch.softmax(filtered_scores, dim=-1)
-                self.log_top_10_scores(filtered_probabilities, prefix="Filtered")
-
+                self.log_top_10_scores(filtered_probabilities, prefix="FILTRATO (EOS)")
+                
+                self.generation_ended = True  # Segnala terminazione
                 return filtered_scores
             else:
-                logging.info("Valid tokens è vuoto e eos() è False, nessun filtro applicato.")
-                return scores
+                # ATTENZIONE: Questo è uno stato di errore!
+                logging.error("ERRORE: Stack non vuoto ma nessun token valido disponibile!")
+                logging.error(f"Stack corrente: {self.pda.stack}")
+                
+                # Opzione sicura: forza comunque EOS per terminare
+                logging.warning("Forzando EOS per sicurezza")
+                eos_token_id = self.tokenizer.eos_token_id
+                filtered_scores = torch.full_like(scores, -float('inf'))
+                filtered_scores[:, eos_token_id] = scores[:, eos_token_id]
+                self.generation_ended = True
+                return filtered_scores
