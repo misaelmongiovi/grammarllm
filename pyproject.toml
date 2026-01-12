@@ -1,6 +1,6 @@
 [project]
 name = "grammarllm"
-version = "0.3.2"
+version = "0.3.3"
 description = """
 GrammarLLM is a powerful Python library for grammar-constrained text generation, built on top of pre-trained Transformer models.
 It allows you to define and apply constraints via formal grammars, ideal for classification, vocabulary restriction, and structured generation.
