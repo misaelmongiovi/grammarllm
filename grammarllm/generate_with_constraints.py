@@ -4,7 +4,7 @@ from .scripts.generate_LL1_parsing_table import parsing_table
 
 from .modules.BaseStreamer import BaseStreamer
 from .modules.PushdownAutomaton import PushdownAutomaton
-from .modules.SimpleLogitProcessor import MaskLogitsProcessor
+from .modules.SimpleLogitProcessor_ import MaskLogitsProcessor
 
 import logging
 import os
@@ -50,21 +50,20 @@ def setup_logging():
         filemode='w+'  # Overwrites the file every time
     )
 
-def generate_text(model, tokenizer, text, logit_processor, streamer, chat_template = None, max_new_tokens=400, do_sample=False, temperature=None, top_p=None, **kwargs):
+def generate_text(model, tokenizer, text, logit_processor, streamer, chat_template = None, max_new_tokens=400, do_sample=False, top_p=None, **kwargs):
     """
-    Genera testo vincolato dalla grammatica, con configurazione dei parametri di generazione sicura.
+    Generate text using the provided model and tokenizer with grammar constraints.
 
     Args:
-        model: Il modello pre-addestrato.
-        tokenizer: Il tokenizer del modello.
-        text: Input text iniziale.
-        logit_processor: Processor dei logit basato sulla grammatica.
-        streamer: Streamer per l'output live.
-        max_new_tokens: Numero massimo di nuovi token da generare.
-        do_sample: Se True, abilita la generazione stocastica.
-        temperature: Controlla la casualità (usato solo se do_sample=True).
-        top_p: Top-p (nucleus sampling), usato solo se do_sample=True.
-        **kwargs: Parametri aggiuntivi opzionali per model.generate().
+        model: pre-trained model.
+        tokenizer: model tokenizer.
+        text: input text or list of messages (if chat_template is used).
+        logit_processor: processor parameter
+        streamer: Streamer parameter
+        max_new_tokens: maximum number of new tokens to generate.
+        do_sample: if True, enables sampling; otherwise, uses greedy decoding.
+        top_p: nucleus sampling parameter (used if do_sample is True).
+        **kwargs: additional generation parameters.
     """
     
     try:
@@ -78,23 +77,21 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
                                                         add_generation_prompt=True,
                                                         return_dict=True,
                                                         return_tensors="pt").to(model.device)
-            #logging.info(tokenized_input) #DEBUG
         else:
             tokenized_input = tokenizer(text, return_tensors="pt")
 
         # Safe defaults
-        kwargs.setdefault("num_beams", 1)  # beam search disattivato
+        kwargs.setdefault("num_beams", 1)  # beam search disabled by default
         kwargs.setdefault("pad_token_id", tokenizer.eos_token_id)
 
-        # Sicurezza num_beams
+        # num_beams safety
         if kwargs["num_beams"] != 1:
-            logging.warning("⚠️ num_beams > 1 non è compatibile con la generazione vincolata da grammatica. Impostato automaticamente a num_beams=1.")
+            logging.warning("⚠️ num_beams > 1 is not compatible with grammar-constrained generation. Automatically set to num_beams=1.")
             kwargs["num_beams"] = 1
+
 
         # Sampling parameters
         if do_sample:
-            if temperature is not None:
-                kwargs["temperature"] = temperature
             if top_p is not None:
                 kwargs["top_p"] = top_p
         else:
@@ -106,12 +103,13 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
         device = model.device
         input_ids = tokenized_input["input_ids"].to(device)
         if input_ids.device != model.device:
-            logging.warning("Errore: gli 'input_ids' sono sulla device {input_ids.device}, mentre il modello è sulla device {model.device}. Spostando 'input_ids' sulla stessa device del modello.")
-        
+
+            logging.warning(f"Error: 'input_ids' are on device {input_ids.device}, while the model is on device {model.device}. Moving 'input_ids' to the same device as the model.")
+            
         attention_mask = tokenized_input["attention_mask"].to(device)
         if attention_mask.device != model.device:
-            logging.warning(f"Errore: l'attention_mask è sulla device {attention_mask.device}, mentre il modello è sulla device {model.device}. Spostando 'attention_mask' sulla stessa device del modello.")
-        
+            logging.warning(f"Error: 'attention_mask' is on device {attention_mask.device}, while the model is on device {model.device}. Moving 'attention_mask' to the same device as the model.")
+
 
         start = input_ids.shape[1]
 
@@ -126,6 +124,8 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
         )
 
         answer = tokenizer.decode(output[0][start:], skip_special_tokens=True)
+        #answer = tokenizer.decode(output[0][start:], skip_special_tokens=False)
+        logging.info(f"Generated Text: {answer}\n\n")
 
         return answer
 

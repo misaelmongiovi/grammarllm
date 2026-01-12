@@ -2,9 +2,11 @@ import logging
 class PushdownAutomaton:
     def __init__(self,grammar,startSymbol,map):
         self.stack = [startSymbol]
+        self.start_symbol = startSymbol # serve per poter fare reset()
         self.grammar = grammar
         self.map_terminals_tokens = map
         self.map_tokens_terminals = {}
+        
         
         for non_terminal, value in map.items():
             #print(f"Processing non-terminal: {non_terminal} {value}")  # DEBUG
@@ -23,6 +25,12 @@ class PushdownAutomaton:
                         self.map_tokens_terminals[token] = []
                     self.map_tokens_terminals[token].append(non_terminal)
 
+
+    def reset(self):
+        """Riporta l'automa allo stato iniziale."""
+        self.stack = [self.start_symbol]  # usa direttamente start_symbol
+        self.current_terminals = []
+        logging.info(f"PDA resettato: stack = {self.stack}")
 
     def recursive_get_tokens(self, stack, visited=None):
         if visited is None:

@@ -1,5 +1,6 @@
 import re
 import logging
+import os
 
 class ProductionRuleProcessor:
     def __init__(self, tokenizer=None):
@@ -376,13 +377,16 @@ class ProductionRuleProcessor:
         self.save_final_grammar(final_grammar)
         return final_grammar, self.tag_to_nt_mapping
 
-    def save_final_grammar(self, grammar, filename='grammarllm/temp/final_grammar.txt'):
+    def save_final_grammar(self, grammar, filename='final_grammar.txt'):
+        output_filename = os.path.join("output/temp",filename)
+
+        os.makedirs(os.path.dirname(output_filename), exist_ok=True)
         """Salva la grammatica finale in formato leggibile"""
         if not grammar:
             logging.info("  Grammatica vuota")
             return
 
-        with open(filename, 'w+') as f:
+        with open(output_filename, 'w+') as f:
             #f.write("=== GRAMMATICA FINALE (PROCESSAMENTO PER REGOLA) ===\n\n")
 
             # Prima stampa le regole iniziali (non tuple)
@@ -436,6 +440,6 @@ class ProductionRuleProcessor:
                     if productions_str:
                         f.write(f"{nt} -> {' | '.join(productions_str)}\n")
 
-        logging.info(f"Grammatica salvata in {filename}")
+        logging.info(f"Grammatica salvata in {output_filename}")
 
     
