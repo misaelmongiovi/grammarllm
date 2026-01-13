@@ -9,9 +9,10 @@ class MaskLogitsProcessor(LogitsProcessor):
     LogitsProcessor che filtra token basandosi su un PDA.
     Gestisce correttamente la generazione di EOS e raccoglie metriche.
     """
-    def __init__(self, tokenizer, pda):
+    def __init__(self, tokenizer, pda, return_original_dist=False):
         self.tokenizer = tokenizer
         self.pda = pda
+        self.return_original_dist = return_original_dist
         self.generation_ended = False  # Flag per terminazione generazione
         self.points = []  # Metriche: (entropy, invalid_mass)
         self.preserved_mass = []  # Storia della massa preservata
@@ -104,14 +105,17 @@ class MaskLogitsProcessor(LogitsProcessor):
             scores: Logits non normalizzati per il prossimo token
             
         Returns:
-            torch.Tensor: Logits filtrati
+            torch.Tensor or tuple: Logits filtrati, o (logits filtrati, logits originali) se return_original_dist è True
         """
+
         # Applica temperatura
         scores = scores / self.temperature
+
+        original_scores = scores.clone()
         
         # Se la generazione è già terminata, lascia passare tutto
         if self.generation_ended:
-            return scores
+            return (scores, original_scores) if self.return_original_dist else scores
         
         logging.info(f"\n{'='*50}")
         logging.info(f"Stack PDA: {self.pda.stack[::-1]}")
@@ -144,7 +148,7 @@ class MaskLogitsProcessor(LogitsProcessor):
             filtered_probabilities = torch.softmax(filtered_scores, dim=-1)
             self.log_top_10_scores(filtered_probabilities, prefix="FILTRATO")
             
-            return filtered_scores
+            return (filtered_scores, original_scores) if self.return_original_dist else filtered_scores
         
         # CASO 2: Nessun token valido - Controlla se stack è vuoto
         else:
@@ -176,7 +180,7 @@ class MaskLogitsProcessor(LogitsProcessor):
                 self.log_top_10_scores(filtered_probabilities, prefix="FILTRATO (EOS)")
                 
                 self.generation_ended = True  # Segnala terminazione
-                return filtered_scores
+                return (filtered_scores, original_scores) if self.return_original_dist else filtered_scores
             else:
                 # ATTENZIONE: Questo è uno stato di errore!
                 logging.error("ERRORE: Stack non vuoto ma nessun token valido disponibile!")
@@ -188,4 +192,4 @@ class MaskLogitsProcessor(LogitsProcessor):
                 filtered_scores = torch.full_like(scores, -float('inf'))
                 filtered_scores[:, eos_token_id] = scores[:, eos_token_id]
                 self.generation_ended = True
-                return filtered_scores
+                return (filtered_scores, original_scores) if self.return_original_dist else filtered_scores
