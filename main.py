@@ -103,7 +103,7 @@ def get_parsing_table_and_map_tt(tokenizer, productions, regex_dict=None):
 def generate_grammar_parameters(tokenizer, pars_tab, map_terminal_tokens):
     # Create Pushdown Automaton and initialize processors and streamer
     pda = PushdownAutomaton(grammar=pars_tab, startSymbol='S*', map=map_terminal_tokens)
-    return MaskLogitsProcessor(tokenizer, pda), BaseStreamer(tokenizer, pda)
+    return MaskLogitsProcessor(tokenizer, pda, return_original_dist=True), BaseStreamer(tokenizer, pda)
 
 def setup_logging():
     """Setup logging configuration."""
@@ -257,6 +257,10 @@ def main():
     output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer, chat_template, do_sample=False)
     print(output) # Example output: "negative sad"
 
+    print(f"Passaggi generati: {len(LogitProcessor.original_scores_history)}")
+    # Primo step dei logit originali
+    primi_logit = LogitProcessor.original_scores_history[0]
+    print(primi_logit)
     #Plotta la traiettoria usando i punti raccolti
     #plot_invalid_trajectory(LogitProcessor.points)
     a = LogitProcessor.preserved_mass

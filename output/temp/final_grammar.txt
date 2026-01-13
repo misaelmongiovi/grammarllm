@@ -1,0 +1,13 @@
+--- Regole principali ---
+
+-- Regole tag per S* --
+S* -> positive A | negative B | neutral C
+
+-- Regole tag per A --
+A -> Ġhappy | Ġpeaceful | Ġjoyful
+
+-- Regole tag per B --
+B -> Ġglo omy | Ġangry | Ġfrustrated
+
+-- Regole tag per C --
+C -> Ġcalm | Ġindifferent | Ġun em otional

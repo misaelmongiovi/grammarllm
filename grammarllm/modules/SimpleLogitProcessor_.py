@@ -17,12 +17,18 @@ class MaskLogitsProcessor(LogitsProcessor):
         self.points = []  # Metriche: (entropy, invalid_mass)
         self.preserved_mass = []  # Storia della massa preservata
         self.temperature = 1.0  # Temperatura di default
+        
+        # History dei logits (se return_original_dist=True)
+        self.original_scores_history = []
+        self.filtered_scores_history = []
 
     def reset(self):
         """Resetta lo stato per una nuova generazione."""
         self.generation_ended = False
         self.points = []
         self.preserved_mass = []
+        self.original_scores_history = []
+        self.filtered_scores_history = []
 
     def log_top_10_scores(self, filtered_probabilities, prefix):
         """Log dei top 10 token con le loro probabilità."""
@@ -115,7 +121,10 @@ class MaskLogitsProcessor(LogitsProcessor):
         
         # Se la generazione è già terminata, lascia passare tutto
         if self.generation_ended:
-            return (scores, original_scores) if self.return_original_dist else scores
+            if self.return_original_dist:
+                self.original_scores_history.append(original_scores)
+                self.filtered_scores_history.append(scores)
+            return scores
         
         logging.info(f"\n{'='*50}")
         logging.info(f"Stack PDA: {self.pda.stack[::-1]}")
@@ -148,7 +157,11 @@ class MaskLogitsProcessor(LogitsProcessor):
             filtered_probabilities = torch.softmax(filtered_scores, dim=-1)
             self.log_top_10_scores(filtered_probabilities, prefix="FILTRATO")
             
-            return (filtered_scores, original_scores) if self.return_original_dist else filtered_scores
+            if self.return_original_dist:
+                self.original_scores_history.append(original_scores)
+                self.filtered_scores_history.append(filtered_scores)
+                
+            return filtered_scores
         
         # CASO 2: Nessun token valido - Controlla se stack è vuoto
         else:
@@ -179,8 +192,12 @@ class MaskLogitsProcessor(LogitsProcessor):
                 filtered_probabilities = torch.softmax(filtered_scores, dim=-1)
                 self.log_top_10_scores(filtered_probabilities, prefix="FILTRATO (EOS)")
                 
+                if self.return_original_dist:
+                    self.original_scores_history.append(original_scores)
+                    self.filtered_scores_history.append(filtered_scores)
+                    
                 self.generation_ended = True  # Segnala terminazione
-                return (filtered_scores, original_scores) if self.return_original_dist else filtered_scores
+                return filtered_scores
             else:
                 # ATTENZIONE: Questo è uno stato di errore!
                 logging.error("ERRORE: Stack non vuoto ma nessun token valido disponibile!")
@@ -191,5 +208,9 @@ class MaskLogitsProcessor(LogitsProcessor):
                 eos_token_id = self.tokenizer.eos_token_id
                 filtered_scores = torch.full_like(scores, -float('inf'))
                 filtered_scores[:, eos_token_id] = scores[:, eos_token_id]
+                if self.return_original_dist:
+                    self.original_scores_history.append(original_scores)
+                    self.filtered_scores_history.append(filtered_scores)
+
                 self.generation_ended = True
-                return (filtered_scores, original_scores) if self.return_original_dist else filtered_scores
+                return filtered_scores
