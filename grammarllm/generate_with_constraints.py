@@ -36,7 +36,7 @@ def get_parsing_table_and_map_tt(tokenizer, productions, regex_dict=None):
 def generate_grammar_parameters(tokenizer, pars_tab, map_terminal_tokens):
     # Create Pushdown Automaton and initialize processors and streamer
     pda = PushdownAutomaton(grammar=pars_tab, startSymbol='S*', map=map_terminal_tokens)
-    return MaskLogitsProcessor(tokenizer, pda), BaseStreamer(tokenizer, pda)
+    return MaskLogitsProcessor(tokenizer, pda, return_original_dist=True), BaseStreamer(tokenizer, pda)
 
 def setup_logging():
     """Setup logging configuration."""
