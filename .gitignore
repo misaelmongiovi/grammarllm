@@ -12,3 +12,4 @@ __pycache__/
 *.pyc
 experiments/
 collaboration/
+implementation_logic_report.md
