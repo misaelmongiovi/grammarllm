@@ -26,6 +26,27 @@ class PushdownAutomaton:
                     self.map_tokens_terminals[token].append(non_terminal)
 
 
+    def clone(self):
+        """
+        Creates a lightweight copy of the automaton.
+        Shares the grammar reference (read-only) but creates a new independent stack.
+        """
+        # Create a new instance without calling __init__ to avoid reprocessing the grammar
+        new_pda = PushdownAutomaton.__new__(PushdownAutomaton)
+        
+        # Copy references to immutable/shared structures
+        new_pda.start_symbol = self.start_symbol
+        new_pda.grammar = self.grammar
+        new_pda.map_terminals_tokens = self.map_terminals_tokens
+        new_pda.map_tokens_terminals = self.map_tokens_terminals
+        new_pda.current_terminals = getattr(self, 'current_terminals', [])
+        
+        # Deep copy the mutable stack (list of strings/immutables)
+        new_pda.stack = list(self.stack)
+        
+        return new_pda
+
+
     def reset(self):
         """Riporta l'automa allo stato iniziale."""
         self.stack = [self.start_symbol]  # usa direttamente start_symbol

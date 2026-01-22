@@ -1,6 +1,7 @@
 import logging
 class BaseStreamer:
     #Streamer has the functionality of updating PDA
+    #is still in use for real-time console logging for gready decoding without beam search
     """
     Base class from which `.generate()` streamers should inherit.
     Handles batch generation updating corresponding PDAs.
@@ -64,43 +65,24 @@ class BaseStreamer:
         # Se batch_size = 1, tokens_batch ha 1 elemento.
         # Se batch_size = 3, tokens_batch ha 3 elementi (i token nuovi per ogni seq).
         
-        if len(tokens_batch) != len(self.pdas):
-             # Mismatch dimensione batch vs pda
-             # Se abbiamo un solo PDA ma 3 token generati -> Errore architetturale o broadcasting
-             if len(self.pdas) == 1:
-                 # Try to reuse single PDA (only safe if sequences identical)
-                 print(f"Warning: Mismatch: Received {len(tokens_batch)} tokens but have {len(self.pdas)} PDAs. Reusing the same PDA for all sequences. It is could be an issue.")
-                 pass 
-             else:
-                 logging.error(f"Mismatch: Received {len(tokens_batch)} tokens but have {len(self.pdas)} PDAs.")
-                 raise ValueError(f"Mismatch: Received {len(tokens_batch)} tokens but have {len(self.pdas)} PDAs.")
-                 # Procediamo finché possiamo
-        
         # Iteriamo su ogni sequenza del batch
         for i, token_id in enumerate(tokens_batch):
-            if i >= len(self.pdas):
-                break
-            
-            pda = self.pdas[i]
-            
             # Log solo per prima sequenza
             do_log = (i == 0)
             
             if do_log:
                 logging.info(f"Token generato (Seq {i}): {token_id} ({self.tokenizer.decode([token_id])})")
 
-            # Se il PDA è già finito, ignora update (padding o EOS già emesso)
-            if pda.eos():
-                continue
+            # STATE UPDATE DISABLED
+            # State is now managed by StatelessLogitsProcessor via re-simulation.
+            # do_log is used only for tracing generation
+            
+            # try:
+            #     pda.next_state(token_id)
+            #     if do_log:
+            #         logging.info(f"Stack PDA aggiornato (Seq {i}): {pda.stack[::-1]}")
+            # except Exception as e:
 
-            try:
-                pda.next_state(token_id)
-                if do_log:
-                    logging.info(f"Stack PDA aggiornato (Seq {i}): {pda.stack[::-1]}")
-            except Exception as e:
-                logging.error(f"Errore durante aggiornamento PDA {i} con token {token_id}: {e}")
-                logging.error(f"Stack corrente: {pda.stack}")
-                raise
 
 
     def end(self):

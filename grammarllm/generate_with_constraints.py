@@ -2,13 +2,14 @@ from .scripts.grammar_generation import ProductionRuleProcessor
 from .scripts.map_terminal_tokens import generate_token_maps
 from .scripts.generate_LL1_parsing_table import parsing_table
 
-from .modules.BaseStreamer import BaseStreamer
-from .modules.PushdownAutomaton import PushdownAutomaton
-from .modules.SimpleLogitProcessor_ import MaskLogitsProcessor
+from .modules.streamer import BaseStreamer
+from .modules.automaton import PushdownAutomaton
+from .modules.logits_processor import StatelessLogitsProcessor
 
 import logging
 import os
 import copy
+import torch
 
 def get_parsing_table_and_map_tt(tokenizer, productions, regex_dict=None):
 
@@ -55,7 +56,8 @@ def generate_grammar_parameters(tokenizer, pars_tab, map_terminal_tokens, num_re
         pdas.append(copy.deepcopy(base_pda))
 
     # LogitsProcessor and Streamer now accept a LIST of PDAs
-    return MaskLogitsProcessor(tokenizer, pdas, return_original_dist=True), BaseStreamer(tokenizer, pdas)
+    # For compatibility, we return base PDAs which can be used by the new processor
+    return pdas, BaseStreamer(tokenizer, pdas)
 
 def setup_logging():
     """Setup logging configuration."""
@@ -68,6 +70,18 @@ def setup_logging():
         format='%(asctime)s - %(levelname)s - %(message)s',
         filemode='w+'  # Overwrites the file every time
     )
+    
+    # Define detailed logger
+    detail_logger = logging.getLogger("grammarllm.detail")
+    detail_logger.setLevel(logging.INFO)
+    # Clear existing handlers to avoid duplicates if re-run
+    if detail_logger.hasHandlers():
+        detail_logger.handlers.clear()
+        
+    detail_handler = logging.FileHandler(os.path.join(log_dir, 'GRAM-DETAIL.log'), mode='w+')
+    detail_handler.setFormatter(logging.Formatter('%(message)s')) # Raw message for rich output
+    detail_logger.addHandler(detail_handler)
+    detail_logger.propagate = False # Do not propagate to root logger (avoid double logging)
 
 def generate_text(model, tokenizer, text, logit_processor, streamer, chat_template = None, max_new_tokens=400, do_sample=False, top_p=None, num_return_sequences=1, **kwargs):
     """
@@ -126,24 +140,17 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
         kwargs.setdefault("num_beams", 1)  # beam search disabled by default
         kwargs.setdefault("pad_token_id", tokenizer.eos_token_id)
 
-        # num_beams safety
-        if kwargs["num_beams"] != 1:
-            logging.warning("⚠️ num_beams > 1 is not compatible with grammar-constrained generation. Automatically set to num_beams=1.")
-            kwargs["num_beams"] = 1
-
-
-        # Sampling parameters
-        if do_sample:
-            if top_p is not None:
-                kwargs["top_p"] = top_p
-        else:
-            # Rimuovi parametri di sampling se presenti
-            kwargs.pop("temperature", None)
-            kwargs.pop("top_p", None)
+        # Sampling logic was simplified/removed in previous edit but we should probably keep safe defaults or cleanup.
+        # Since I'm using Stateless Processor, I should just trust the kwargs.
+        # Removing the dangling line.
+        
+        # Determine num_beams (default 1 if not passed)
+        num_beams = kwargs.get("num_beams", 1)
         
         # Check compatibility between num_return_sequences and do_sample
-        if num_return_sequences > 1 and not do_sample:
-             logging.warning("⚠️ num_return_sequences > 1 requires do_sample=True. Automatically setting do_sample=True.")
+        # If num_beams > 1, we can return multiple sequences WITHOUT sampling (returning top beams).
+        if num_return_sequences > 1 and not do_sample and num_beams == 1:
+             logging.warning("⚠️ num_return_sequences > 1 with num_beams=1 requires do_sample=True. Automatically setting do_sample=True.")
              do_sample = True
 
         # Device compatibility
@@ -158,58 +165,83 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
             logging.warning(f"Error: 'attention_mask' is on device {attention_mask.device}, while the model is on device {model.device}. Moving 'attention_mask' to the same device as the model.")
 
 
-        # Determine effective batch size (prompts * num_return_sequences)
-        # Note: input_ids has shape (batch_prompts, seq_len)
-        # model.generate with num_return_sequences > 1 will expand this to (batch_prompts * num_return_sequences, ...)
-        
+        # Determine effective batch size
         batch_prompts = input_ids.shape[0]
-        total_sequences = batch_prompts * num_return_sequences
+        # For Beam Search, the processor sees (batch_prompts * num_beams) sequences
+        # BUT: LogitsProcessor in HF often gets the 'expanded' input_ids automatically
         
-        # Check if LogitProcessor/Streamer have enough PDAs
-        # Example: prompt batch=2, num_return=3 -> total 6 sequences -> need 6 PDAs
-        current_pdas = logit_processor.pdas
+        start_len = input_ids.shape[1]
         
-        if len(current_pdas) < total_sequences:
-            logging.info(f"Expanding PDAs from {len(current_pdas)} to {total_sequences} to handle batch prompts * num_return_sequences.")
-            
-            # We assume current_pdas has at least 1 valid PDA to clone
-            base_pda = current_pdas[0] # Use the first one as template (assuming all are fresh/same grammar)
-             
-            # Expand list
-            while len(logit_processor.pdas) < total_sequences:
-                 logit_processor.pdas.append(copy.deepcopy(base_pda))
-            
-            # Sync streamer pdas (referencing the same list object ideally, or update list)
-            # BaseStreamer stores self.pdas. If we appended to the list object in place, check if reference is shared.
-            # MaskLogitsProcessor stores self.pdas.
-            
-            # To be safe, re-assign list or append to streamer's list too if different object
-            if streamer.pdas is not logit_processor.pdas:
-                 streamer.pdas = logit_processor.pdas # Share the list reference
+        # Ensure we have enough base_pdas (templates) for the PROMPTS
+        # `logit_processor` in arguments is actually just the list of PDAs now (from generate_grammar_parameters return change)
+        # Rename for clarity
+        base_pdas = logit_processor if isinstance(logit_processor, list) else logit_processor.pdas
         
-        start = input_ids.shape[1]
-        
-        # Reset dello stato per garantire pulizia, specialmente se la generazione precedente
-        # è terminata prematuramente (max_new_tokens)
-        logit_processor.reset()
-        streamer.is_first_call = True
+        if len(base_pdas) < batch_prompts:
+             logging.info(f"Expanding Base PDAs from {len(base_pdas)} to {batch_prompts}")
+             base_template = base_pdas[0]
+             while len(base_pdas) < batch_prompts:
+                 base_pdas.append(base_template.clone())
 
-        output = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            do_sample=do_sample,
-            max_new_tokens=max_new_tokens,
-            streamer=streamer,
-            logits_processor=[logit_processor],
-            num_return_sequences=num_return_sequences,
-            **kwargs
+        # Instantiate the Stateless Processor
+        # prompt_len = start_len (length of context before generation)
+        temperature = kwargs.get("temperature", 1.0)
+        
+        stateless_processor = StatelessLogitsProcessor(
+            tokenizer=tokenizer,
+            base_pdas=base_pdas,
+            num_beams=num_beams,
+            prompt_len=start_len,
+            temperature=temperature
         )
         
+        streamer.is_first_call = True
+
+        # Prepare kwargs for generate
+        generate_kwargs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "do_sample": do_sample,
+            "max_new_tokens": max_new_tokens,
+            "logits_processor": [stateless_processor],
+            "num_return_sequences": num_return_sequences,
+            **kwargs 
+        }
+        
+        if top_p is not None:
+            generate_kwargs["top_p"] = top_p
+
+        # HF Transformers does not support Streamer with Beam Search
+        if num_beams == 1:
+            generate_kwargs["streamer"] = streamer
+        
+        # Enable output scores
+        generate_kwargs["return_dict_in_generate"] = True
+        generate_kwargs["output_scores"] = True
+
+        outputs = model.generate(**generate_kwargs)
+        
+        # Calculate transition scores
+        # normalize_logits=True means we get log_softmax probs
+        transition_scores = model.compute_transition_scores(
+            outputs.sequences, 
+            outputs.scores, 
+            beam_indices=getattr(outputs, "beam_indices", None),  #Beam indices are only available when num_beams > 1
+            normalize_logits=True
+        )
+
         answers = []
-        for i in range(len(output)):
-            decoded_text = tokenizer.decode(output[i][start:], skip_special_tokens=True)
+        for i, sequence in enumerate(outputs.sequences):
+            # Calculate metrics
+            gen_log_prob = torch.sum(transition_scores[i])
+            prob = torch.exp(gen_log_prob)
+            
+            # Extract text
+            decoded_text = tokenizer.decode(sequence[start_len:], skip_special_tokens=True)
             answers.append(decoded_text)
-            logging.info(f"Generated Text {i+1}: {decoded_text}\n\n")
+            
+            logging.info(f"Generated Text {i+1}: {decoded_text}")
+            logging.info(f"Metrics (Seq {i+1}): Prob={prob.item():.6f}, LogProb={gen_log_prob.item():.4f}\n")
 
         if num_return_sequences == 1:
             return answers[0]
