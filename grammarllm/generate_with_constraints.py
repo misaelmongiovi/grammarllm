@@ -137,6 +137,11 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
 
 
         start = input_ids.shape[1]
+        
+        # Reset dello stato per garantire pulizia, specialmente se la generazione precedente
+        # è terminata prematuramente (max_new_tokens)
+        logit_processor.reset()
+        streamer.is_first_call = True
 
         output = model.generate(
             input_ids=input_ids,

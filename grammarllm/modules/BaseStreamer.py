@@ -69,9 +69,11 @@ class BaseStreamer:
              # Se abbiamo un solo PDA ma 3 token generati -> Errore architetturale o broadcasting
              if len(self.pdas) == 1:
                  # Try to reuse single PDA (only safe if sequences identical)
+                 print(f"Warning: Mismatch: Received {len(tokens_batch)} tokens but have {len(self.pdas)} PDAs. Reusing the same PDA for all sequences. It is could be an issue.")
                  pass 
              else:
                  logging.error(f"Mismatch: Received {len(tokens_batch)} tokens but have {len(self.pdas)} PDAs.")
+                 raise ValueError(f"Mismatch: Received {len(tokens_batch)} tokens but have {len(self.pdas)} PDAs.")
                  # Procediamo finché possiamo
         
         # Iteriamo su ogni sequenza del batch
@@ -112,11 +114,9 @@ class BaseStreamer:
         all_empty = True
         for i, pda in enumerate(self.pdas):
             if not pda.eos():
-                logging.warning(f"⚠ Generazione terminata ma stack PDA {i} non vuoto: {pda.stack[::-1]}")
+                logging.warning(f"⚠ Generazione terminata ma stack PDA {i} non vuoto: {pda.stack[::-1]}. Resetting PDA to ensure clean state for next generation.")
                 all_empty = False
-            else:
-                # logging.info(f"✓ Stack PDA {i} correttamente vuoto")
-                pass
+
         
         if all_empty:
              logging.info("✓ Tutti gli stack PDA correttamente vuoti")

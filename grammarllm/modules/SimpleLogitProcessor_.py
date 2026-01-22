@@ -30,7 +30,10 @@ class MaskLogitsProcessor(LogitsProcessor):
         self.preserved_mass = []
         self.original_scores_history = []
         self.filtered_scores_history = []
-        # Non resettiamo i PDA qui, lo fa lo streamer o l'utente esternamente
+        
+        # Reset dei PDA per sicurezza
+        for pda in self.pdas:
+            pda.reset()
 
     def log_top_10_scores(self, filtered_probabilities, prefix):
         """Log dei top 10 token con le loro probabilità (Solo per la prima sequenza)."""

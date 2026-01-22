@@ -135,7 +135,7 @@ def main():
     # Set temperature for LogitProcessor
     LogitProcessor.temperature = 3.0 
     #output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer, chat_template, do_sample=False)
-    output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer, chat_template, do_sample=True, num_return_sequences=num_return_sequences)
+    output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer, chat_template, do_sample=True, num_return_sequences=num_return_sequences, max_new_tokens=2)
     print(output) # Example output: "negative sad"
 
     #print(f"Passaggi generati: {len(LogitProcessor.original_scores_history)}")
