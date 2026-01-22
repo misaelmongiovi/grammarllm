@@ -10,6 +10,8 @@ It allows you to define and apply constraints via formal grammars, ideal for cla
 * ✅ **Grammar-constrained generation** — define your own production rules
 * 🤗 **Compatible with Hugging Face Transformers**
 * ⚡️ **Linear-time decoding via deterministic PDA** — efficient grammar-constrained generation
+* 🔦 **Beam Search Support** — explore multiple generation paths
+* 📊 **Detailed Logging** — visualize probability distributions side-by-side
 
 ---
 
@@ -24,15 +26,18 @@ It allows you to define and apply constraints via formal grammars, ideal for cla
 
 ## ⚙️ Installation
 
-Run the following commands to clone the repository and install the requirements:
+Run the following commands to clone the repository and install dependencies using **uv** (recommended) or pip:
 
 ```bash
 git clone https://github.com/misaelmongiovi/grammarllm.git
+cd grammarllm
 ```
 
+Using uv:
+
 ```bash
-cd grammarllm
-pip install -r requirements.txt
+uv sync
+uv run main.py
 ```
 
 ---
@@ -56,7 +61,7 @@ def main():
                     'B': ['<<sad>>', '<<angry>>', '<<frustrated>>'],
                     'C': ['<<calm>>', '<<indifferent>>', '<<unemotional>>']
                   }
-    
+  
     system_prompt = """You are a hierarchical classification assistant. Your task is to classify the user input 
                         into one of the following hierarchical categories as shown in the followig examples\n\n"""
 
@@ -80,7 +85,7 @@ def main():
         examples=examples
     )
 
-    
+  
     model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
     tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
 
@@ -152,7 +157,7 @@ def main():
         {"role": "user", "content": "Anything special today?"},
         {"role": "assistant", "content": "I'm very excited and happy today!"}
         ]
-    
+  
     prompt=create_prompt(
         prompt_input="Say something of positive:",
         system_prompt=system_prompt,
@@ -379,7 +384,7 @@ Each key in regex_dict must follow the format 'regex_' + symbol_name, where symb
 
 ## ⚠️ Limitations
 
-* ❌ Beam search is **not supported**
+* **Beam Search Support** — supported via stateless re-simulation
 * You cannot define multiple <<exact_string>> in the same rule
 
 ---
@@ -407,7 +412,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-## 🖌 Citation 
+## 🖌 Citation
 
 [![ACL 2025 Paper](https://img.shields.io/badge/ACL%202025-Paper-blue)](https://aclanthology.org/2025.findings-acl.177/)
 
@@ -429,8 +434,7 @@ If you use this work, please cite:
 
 ## 📫 Contact
 
-📧 Email:  
+📧 Email:
 [gabriele.tuccio@phd.unict.it](mailto:gabriele.tuccio@phd.unict.it)
 [luana.bulla@phd.unict.it](mailto:luana.bulla@phd.unict.it)
 [misael.mongiovi@unict.it](mailto:misael.mongiovi@unict.it)
-

@@ -10,6 +10,8 @@ It allows you to define and apply constraints via formal grammars, ideal for cla
 * ✅ **Grammar-constrained generation** — define your own production rules
 * 🤗 **Compatible with Hugging Face Transformers**
 * ⚡️ **Linear-time decoding via deterministic PDA** — efficient grammar-constrained generation
+* 🔦 **Beam Search Support** — explore multiple generation paths
+* 📊 **Detailed Logging** — visualize probability distributions side-by-side
 
 ---
 
@@ -23,12 +25,12 @@ It allows you to define and apply constraints via formal grammars, ideal for cla
 ---
 
 ## ⚙️ Installation
+
 The package is currently available on Test PyPI. To install the library, use the following command:
 
 ```bash
 pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple grammarllm
 ```
-
 
 ---
 
@@ -87,9 +89,14 @@ This function generates text that adheres to your specified grammar constraints.
 **Additional Options:**
 
 * `chat_template`: Pass this argument if you need to provide examples and want to format the full prompt appropriately for a chat model.
-* Other options to control generation length, sampling strategies, and overall behavior.
+* `num_beams`: Number of beams for beam search (default: 1).
+* `temperature`: Sampling temperature (default: 1.0).
+* `top_p`: Nucleus sampling parameter (default: None).
+* `do_sample`: Enable sampling (default: False).
+* `num_return_sequences`: Number of sequences to return (default: 1).
 
-----
+---
+
 ## 🔍 Use Cases
 
 ### 1. 🔮 Classification
@@ -398,8 +405,6 @@ definition. To achieve this, we propose LL(prefix) a novel formalization that ge
 * Use `ε` for epsilon (empty) transitions
 * In JSON format, square brackets `[]` represent a production rule, and commas inside the brackets (e.g., `[A, B, C]`) serve the same purpose as the `|` (OR) operator in formal language notation.
 
-
-
 ---
 
 ### 🔍 Regex Dictionary
@@ -440,12 +445,11 @@ Use custom regex keys as terminal symbols in your grammar productions.
 Important:
 Each key in regex_dict must follow the format 'regex_' + symbol_name, where symbol_name exactly matches the corresponding terminal symbol used in your grammar production rules.
 
-
 ---
 
 ## ⚠️ Limitations
 
-* ❌ Beam search is **not supported**
+* **Beam Search Support** — supported via stateless re-simulation
 * You cannot define multiple <<exact_string>> in the same rule
 
 ---
@@ -458,10 +462,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📫 Contact
 
-📧 Email:  
+📧 Email:
 [gabriele.tuccio@phd.unict.it](mailto:gabriele.tuccio@phd.unict.it)
 [luana.bulla@phd.unict.it](mailto:luana.bulla@phd.unict.it)
 [misael.mongiovi@unict.it](mailto:misael.mongiovi@unict.it)
-
-
-
