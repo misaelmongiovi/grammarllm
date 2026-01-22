@@ -13,11 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-#from grammarllm.utils.common_regex import regex_dict
-#from grammarllm.utils.examples import *
-#from grammarllm.utils.gloss_class import classes
 from grammarllm.utils.toolbox import create_prompt, chat_template 
-
 
 
 
@@ -109,11 +105,22 @@ def main():
         {"role": "assistant", "content": "negative sad"}
     ]
     # Create prompt
-    prompt=create_prompt(
-        prompt_input="It's raining and I feel a bit down.",
-        system_prompt=system_prompt,
-        examples=examples
-    )
+    # BATCH PROMPTING EXAMPLE
+    prompt_inputs = [
+        "It's raining and I feel a bit down.",
+        "The sun is shining and I am winning."
+    ]
+    
+    prompts = []
+    for p_in in prompt_inputs:
+        prompts.append(create_prompt(
+            prompt_input=p_in,
+            system_prompt=system_prompt,
+            examples=examples
+        ))
+    
+    # Pass LIST of prompts to generate_text
+    prompt = prompts
 
 
     # Initialize tokenizer
@@ -145,8 +152,8 @@ def main():
         print(primi_logit)
     #Plotta la traiettoria usando i punti raccolti
     #plot_invalid_trajectory(LogitProcessor.points)
-    a = LogitProcessor.preserved_mass
-    print(a)#[0.9560056328773499, 0.046188708394765854, 0.0]
+    #a = LogitProcessor.preserved_mass
+    #print(a)#[0.9560056328773499, 0.046188708394765854, 0.0]
 
 
 if __name__ == "__main__":

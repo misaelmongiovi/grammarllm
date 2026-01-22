@@ -87,16 +87,38 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
     """
     
     try:
+        # Pre-execution checks for tokenizer 
+        if tokenizer.pad_token is None:
+            if tokenizer.eos_token is not None:
+                tokenizer.pad_token = tokenizer.eos_token
+            else:
+                logging.warning("Tokenizer has no pad_token or eos_token to use as pad.")
+                raise ValueError("Tokenizer has no pad_token or eos_token to use as pad.")
+        
+        # Enforce left padding for decoder-only generation
+        if tokenizer.padding_side != "left":
+            tokenizer.padding_side = "left"
+
         # TO USE WHEN CREATE PROMPT IS USED AND PROMPT IS A LIST
         if isinstance(text,list):
-            if chat_template is None:
-                raise ValueError("Chat template must be specified")
-            tokenizer.chat_template = chat_template
-            tokenized_input = tokenizer.apply_chat_template(text, 
-                                                        tokenize=True,
-                                                        add_generation_prompt=True,
-                                                        return_dict=True,
-                                                        return_tensors="pt").to(model.device)
+            if chat_template is not None:
+                # LIST WITH CHAT TEMPLATE -> CONVERSATION
+                tokenizer.chat_template = chat_template
+                tokenized_input = tokenizer.apply_chat_template(text, 
+                                                            tokenize=True,
+                                                            add_generation_prompt=True,
+                                                            return_dict=True,
+                                                            padding=True,
+                                                            return_tensors="pt").to(model.device)
+            else:
+                # LIST WITHOUT CHAT TEMPLATE -> BATCH OF PROMPTS
+                # Se l'utente passa una lista di stringhe ["prompt1", "prompt2"], lo trattiamo come batch
+                # Assicuriamoci che siano stringhe
+                if all(isinstance(t, str) for t in text):
+                     # Padding è necessario per batch input
+                     tokenized_input = tokenizer(text, return_tensors="pt", padding=True)
+                else:
+                    raise ValueError("Se `text` è una lista e `chat_template` è None, deve essere una lista di stringhe (batch prompts).")
         else:
             tokenized_input = tokenizer(text, return_tensors="pt")
 
@@ -136,6 +158,35 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
             logging.warning(f"Error: 'attention_mask' is on device {attention_mask.device}, while the model is on device {model.device}. Moving 'attention_mask' to the same device as the model.")
 
 
+        # Determine effective batch size (prompts * num_return_sequences)
+        # Note: input_ids has shape (batch_prompts, seq_len)
+        # model.generate with num_return_sequences > 1 will expand this to (batch_prompts * num_return_sequences, ...)
+        
+        batch_prompts = input_ids.shape[0]
+        total_sequences = batch_prompts * num_return_sequences
+        
+        # Check if LogitProcessor/Streamer have enough PDAs
+        # Example: prompt batch=2, num_return=3 -> total 6 sequences -> need 6 PDAs
+        current_pdas = logit_processor.pdas
+        
+        if len(current_pdas) < total_sequences:
+            logging.info(f"Expanding PDAs from {len(current_pdas)} to {total_sequences} to handle batch prompts * num_return_sequences.")
+            
+            # We assume current_pdas has at least 1 valid PDA to clone
+            base_pda = current_pdas[0] # Use the first one as template (assuming all are fresh/same grammar)
+             
+            # Expand list
+            while len(logit_processor.pdas) < total_sequences:
+                 logit_processor.pdas.append(copy.deepcopy(base_pda))
+            
+            # Sync streamer pdas (referencing the same list object ideally, or update list)
+            # BaseStreamer stores self.pdas. If we appended to the list object in place, check if reference is shared.
+            # MaskLogitsProcessor stores self.pdas.
+            
+            # To be safe, re-assign list or append to streamer's list too if different object
+            if streamer.pdas is not logit_processor.pdas:
+                 streamer.pdas = logit_processor.pdas # Share the list reference
+        
         start = input_ids.shape[1]
         
         # Reset dello stato per garantire pulizia, specialmente se la generazione precedente
