@@ -102,7 +102,7 @@ class PushdownAutomaton:
         logging.info(f"check_terminals is: {check_terminals}")
 
 
-        assert len(check_terminals) == 1, "Scelto un token ambiguo, in quanto corrispondente a più possibili terminali per questo stato"
+        assert len(check_terminals) == 1, f"Scelto un token '{token_gen}' ambiguo (trovati {len(check_terminals)} terminali: {check_terminals}), in quanto corrispondente a più possibili terminali per questo stato"
         terminal = list(check_terminals)[0]
         self.next_state_terminal(terminal)
 

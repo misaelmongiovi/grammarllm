@@ -181,7 +181,10 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
              logging.info(f"Expanding Base PDAs from {len(base_pdas)} to {batch_prompts}")
              base_template = base_pdas[0]
              while len(base_pdas) < batch_prompts:
-                 base_pdas.append(base_template.clone())
+                base_pdas.append(base_template.clone())
+
+        # Calculate effective sequences per prompt (expansion factor)
+        sequences_per_prompt = max(num_beams, num_return_sequences)
 
         # Instantiate the Stateless Processor
         # prompt_len = start_len (length of context before generation)
@@ -190,7 +193,7 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
         stateless_processor = StatelessLogitsProcessor(
             tokenizer=tokenizer,
             base_pdas=base_pdas,
-            num_beams=num_beams,
+            sequences_per_prompt=sequences_per_prompt,
             prompt_len=start_len,
             temperature=temperature
         )
@@ -230,23 +233,59 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
             normalize_logits=True
         )
 
-        answers = []
-        for i, sequence in enumerate(outputs.sequences):
-            # Calculate metrics
-            gen_log_prob = torch.sum(transition_scores[i])
-            prob = torch.exp(gen_log_prob)
+        # Organize answers by prompt
+        # Transformers generate() returns batch_size * num_return_sequences items
+        # Indices [0...num_return_sequences-1] belong to prompt 0, etc.
+        n_ret = num_return_sequences
+        batch_answers = []
+        
+        for p_idx in range(batch_prompts):
+            prompt_results = []
+            for s_idx in range(n_ret):
+                i = p_idx * n_ret + s_idx
+                sequence = outputs.sequences[i]
+                
+                # Calculate metrics
+                gen_log_prob = transition_scores[i].sum().item()
+                prob = torch.exp(torch.tensor(gen_log_prob)).item()
+                
+                # Extract text
+                decoded_text = tokenizer.decode(sequence[start_len:], skip_special_tokens=True)
+                
+                result_item = {
+                    "text": decoded_text,
+                    "probability": prob,
+                    "log_prob": gen_log_prob
+                }
+                
+                if kwargs.get("output_scores", False):
+                    result_item["transition_scores"] = transition_scores[i].tolist()
+                    result_item["scores"] = [score[i].tolist() for score in outputs.scores]
+                    result_item["original_scores"] = [score[i].tolist() for score in stateless_processor.original_scores_history]
+                
+                prompt_results.append(result_item)
+                
+                logging.info(f"Prompt {p_idx+1}, Seq {s_idx+1}: {decoded_text}")
+                logging.info(f"Metrics: Prob={prob:.6f}, LogProb={gen_log_prob:.4f}\n")
             
-            # Extract text
-            decoded_text = tokenizer.decode(sequence[start_len:], skip_special_tokens=True)
-            answers.append(decoded_text)
+            # Sort individual prompt results by probability descending
+            prompt_results.sort(key=lambda x: x["probability"], reverse=True)
             
-            logging.info(f"Generated Text {i+1}: {decoded_text}")
-            logging.info(f"Metrics (Seq {i+1}): Prob={prob.item():.6f}, LogProb={gen_log_prob.item():.4f}\n")
+            # If output_scores is False, simplify to just text if only one sequence requested
+            if not kwargs.get("output_scores", False):
+                if n_ret == 1:
+                    batch_answers.append(prompt_results[0]["text"])
+                else:
+                    batch_answers.append([r["text"] for r in prompt_results])
+            else:
+                batch_answers.append(prompt_results)
 
-        if num_return_sequences == 1:
-            return answers[0]
+        # Final Return Logic
+        if batch_prompts > 1:
+            return batch_answers
         else:
-            return answers
+            # Single prompt: return the list of completions (or single string if n_ret=1)
+            return batch_answers[0]
 
     except Exception as e:
         import traceback

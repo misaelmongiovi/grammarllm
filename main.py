@@ -14,6 +14,7 @@ from grammarllm.generate_with_constraints import (
     generate_text
 )
 
+
     
 def main():
     setup_logging()
@@ -80,13 +81,18 @@ def main():
     output = generate_text(
         model, tokenizer, prompt, pdas, Streamer, chat_template, 
         do_sample=False, 
-        num_return_sequences=2, 
+        #num_return_sequences=1, 
         max_new_tokens=2,
         num_beams=2,  # Enable Beam Search
-        temperature=10.0,
+        temperature=1.2,
+        output_scores=False,
     )
-    print(output) # Example output: ["negative sad", "positive joyful"]
+    for out in output:
+        print(out)
+        
+
 
 
 if __name__ == "__main__":
     main()
+
