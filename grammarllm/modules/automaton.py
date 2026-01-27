@@ -24,6 +24,9 @@ class PushdownAutomaton:
                     if token not in self.map_tokens_terminals:
                         self.map_tokens_terminals[token] = []
                     self.map_tokens_terminals[token].append(non_terminal)
+        
+        # Initialize current_terminals
+        self.get_tokens()
 
 
     def clone(self):
@@ -105,6 +108,9 @@ class PushdownAutomaton:
         assert len(check_terminals) == 1, f"Scelto un token '{token_gen}' ambiguo (trovati {len(check_terminals)} terminali: {check_terminals}), in quanto corrispondente a più possibili terminali per questo stato"
         terminal = list(check_terminals)[0]
         self.next_state_terminal(terminal)
+        
+        # Refresh current_terminals for the next state
+        self.get_tokens()
 
 
     def next_state_terminal(self, terminal):

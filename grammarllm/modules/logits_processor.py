@@ -99,6 +99,9 @@ class StatelessLogitsProcessor(LogitsProcessor):
         if self.temperature != 1.0:
             scores = scores / self.temperature
         
+        # Check if we should log based on logger level
+        do_log = logging.getLogger().getEffectiveLevel() <= logging.DEBUG
+        
         # Log Logic: Log every step? The user asked for "distribution before and after"
         # and "different sentences". For Beam Search, logging every step for every beam is verbose but requested.
         # We will log ALL beams.
@@ -147,24 +150,28 @@ class StatelessLogitsProcessor(LogitsProcessor):
                 # Try finding closest ancestor in cache
                 found_ancestor = False
                 prefix_tuple = history_tuple[:-1]
-                
                 if len(history_tokens) > 0 and (prompt_idx, prefix_tuple) in self.pda_cache:
-                     # Linear Advance: Clone ancestor and step once
-                     ancestor_pda = self.pda_cache[(prompt_idx, prefix_tuple)]
-                     pda = ancestor_pda.clone()
-                     try:
-                         pda.next_state(history_tokens[-1])
-                         found_ancestor = True
-                     except Exception as e:
-                         # Invalid transition in history (shouldn't happen if masked correctly before)
-                         # Fallback to base
-                         logging.error(f"Error advancing cached PDA: {e}. Falling back to base.")
-                         pda = base_pda.clone()
+                    # Linear Advance: Clone ancestor and step once
+                    ancestor_pda = self.pda_cache[(prompt_idx, prefix_tuple)]
+                    pda = ancestor_pda.clone()
+                    try:
+                        # Skip if already at EOS (avoids errors when history contains extra EOS/padding tokens)
+                        if not pda.eos():
+                            pda.next_state(history_tokens[-1])
+                        found_ancestor = True
+                    except Exception as e:
+                        # Invalid transition in history (shouldn't happen if masked correctly before)
+                        # Fallback to base
+                        logging.error(f"Error advancing cached PDA: {e}. Falling back to base.")
+                        pda = base_pda.clone()
                 else:
                     # Full Re-simulation from Base
                     pda = base_pda.clone()
                     for token in history_tokens:
                         try:
+                            # Skip if already at EOS (avoids errors when history contains extra EOS/padding tokens)
+                            if pda.eos():
+                                break
                             pda.next_state(token)
                         except Exception as e:
                              # This catches cases where history is invalid relative to grammar
