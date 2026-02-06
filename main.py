@@ -81,14 +81,24 @@ def main():
     output = generate_text(
         model, tokenizer, prompt, pdas, Streamer, chat_template, 
         do_sample=False, 
-        #num_return_sequences=1, 
-        max_new_tokens=2,
+        num_return_sequences=1, 
+        max_new_tokens=2, # Single token generation
         num_beams=2,  # Enable Beam Search
         temperature=1.2,
-        output_scores=False,
+        output_scores=False, # Verify stack is still available even if scores are disabled
     )
-    for out in output:
-        print(out)
+    for i, out in enumerate(output):
+        print(f"\n--- Result {i} ---")
+        if isinstance(out, dict):
+            print(f"Generated text: {out['text']}")
+            if out.get('pda_history'):
+                print("PDA Stack History (step by step):")
+                for step, stack in enumerate(out['pda_history']):
+                    print(f"  Token {step+1}: {stack}")
+            else:
+                print(f"Final PDA Stack: {out.get('pda_stack')}")
+        else:
+            print(out)
         
 
 

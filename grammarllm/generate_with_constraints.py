@@ -83,7 +83,7 @@ def setup_logging():
     detail_logger.addHandler(detail_handler)
     detail_logger.propagate = False # Do not propagate to root logger (avoid double logging)
 
-def generate_text(model, tokenizer, text, logit_processor, streamer, chat_template = None, max_new_tokens=400, do_sample=False, top_p=None, num_return_sequences=1, **kwargs):
+def generate_text(model, tokenizer, text, logit_processor, streamer, chat_template = None, max_new_tokens=400, do_sample=False, top_p=None, num_return_sequences=1, return_pda_stack=True, **kwargs):
     """
     Generate text using the provided model and tokenizer with grammar constraints.
 
@@ -249,7 +249,8 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
                 gen_log_prob = transition_scores[i].sum().item()
                 prob = torch.exp(torch.tensor(gen_log_prob)).item()
                 
-                # Extract text
+                # Get PDA stack history (always available if requested)
+                new_tokens = sequence[start_len:].tolist()
                 decoded_text = tokenizer.decode(sequence[start_len:], skip_special_tokens=True)
                 
                 result_item = {
@@ -258,6 +259,17 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
                     "log_prob": gen_log_prob
                 }
                 
+                if return_pda_stack:
+                    stack_history = []
+                    # For each step of generation, get the stack state
+                    for t in range(1, len(new_tokens) + 1):
+                        prefix = new_tokens[:t]
+                        pda_at_t = stateless_processor.get_pda_for_sequence(prefix, prompt_idx=p_idx)
+                        stack_history.append(list(pda_at_t.stack))
+                    
+                    result_item["pda_history"] = stack_history
+                    # pda_stack remains the final state for backward compatibility
+                    result_item["pda_stack"] = stack_history[-1] if stack_history else list(base_pdas[p_idx].stack)
                 if kwargs.get("output_scores", False):
                     result_item["transition_scores"] = transition_scores[i].tolist()
                     result_item["scores"] = [score[i].tolist() for score in outputs.scores]
@@ -266,19 +278,28 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
                 prompt_results.append(result_item)
                 
                 logging.info(f"Prompt {p_idx+1}, Seq {s_idx+1}: {decoded_text}")
-                logging.info(f"Metrics: Prob={prob:.6f}, LogProb={gen_log_prob:.4f}\n")
+                logging.info(f"Metrics: Prob={prob:.6f}, LogProb={gen_log_prob:.4f}")
+                if "pda_stack" in result_item:
+                    logging.info(f"PDA Stack: {result_item['pda_stack']}\n")
+                else:
+                    logging.info("\n")
             
             # Sort individual prompt results by probability descending
             prompt_results.sort(key=lambda x: x["probability"], reverse=True)
             
-            # If output_scores is False, simplify to just text if only one sequence requested
-            if not kwargs.get("output_scores", False):
+            # Final Return Logic
+            # If output_scores is False AND return_pda_stack is False, simplify to just text if only one sequence requested
+            if not kwargs.get("output_scores", False) and not return_pda_stack:
                 if n_ret == 1:
                     batch_answers.append(prompt_results[0]["text"])
                 else:
                     batch_answers.append([r["text"] for r in prompt_results])
             else:
-                batch_answers.append(prompt_results)
+                # Return the full result_item dicts (containing at least text and stack)
+                if n_ret == 1:
+                    batch_answers.append(prompt_results[0])
+                else:
+                    batch_answers.append(prompt_results)
 
         # Final Return Logic
         if batch_prompts > 1:

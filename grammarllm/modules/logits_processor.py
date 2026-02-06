@@ -150,32 +150,36 @@ class StatelessLogitsProcessor(LogitsProcessor):
                 # Try finding closest ancestor in cache
                 found_ancestor = False
                 prefix_tuple = history_tuple[:-1]
+                
                 if len(history_tokens) > 0 and (prompt_idx, prefix_tuple) in self.pda_cache:
-                    # Linear Advance: Clone ancestor and step once
+                    # Case A: Linear Advance from Cache
                     ancestor_pda = self.pda_cache[(prompt_idx, prefix_tuple)]
                     pda = ancestor_pda.clone()
                     try:
-                        # Skip if already at EOS (avoids errors when history contains extra EOS/padding tokens)
+                        last_token = history_tokens[-1]
                         if not pda.eos():
-                            pda.next_state(history_tokens[-1])
+                            # Skip if special token (BOS/PAD)
+                            is_special = last_token in [self.tokenizer.bos_token_id, self.tokenizer.pad_token_id, getattr(self.tokenizer, 'unk_token_id', None)]
+                            if not is_special:
+                                pda.next_state(last_token)
                         found_ancestor = True
                     except Exception as e:
-                        # Invalid transition in history (shouldn't happen if masked correctly before)
-                        # Fallback to base
-                        logging.error(f"Error advancing cached PDA: {e}. Falling back to base.")
-                        pda = base_pda.clone()
-                else:
-                    # Full Re-simulation from Base
+                        logging.error(f"Error advancing cached PDA at history index {len(history_tokens)-1} (token={history_tokens[-1]}): {e}. Falling back to full re-simulation.")
+                        found_ancestor = False # Trigger fallback below
+                
+                if not found_ancestor:
+                    # Case B: Full Re-simulation from Base (either no prefix or linear advance failed)
                     pda = base_pda.clone()
                     for token in history_tokens:
                         try:
-                            # Skip if already at EOS (avoids errors when history contains extra EOS/padding tokens)
                             if pda.eos():
                                 break
+                            is_special = token in [self.tokenizer.bos_token_id, self.tokenizer.pad_token_id, getattr(self.tokenizer, 'unk_token_id', None)]
+                            if is_special:
+                                continue
                             pda.next_state(token)
                         except Exception as e:
-                             # This catches cases where history is invalid relative to grammar
-                             if do_log: logging.debug(f"History mismatch (likely EOS or forced): {e}")
+                             if do_log: logging.debug(f"History mismatch at token {token}: {e}. {pda.get_stack_debug_info()}")
                              break 
                 
                 # Store in cache
@@ -220,3 +224,36 @@ class StatelessLogitsProcessor(LogitsProcessor):
         self.filtered_scores_history.append(scores.clone())
         
         return scores
+
+    def get_pda_for_sequence(self, token_ids, prompt_idx=0):
+        """
+        Retrieves or simulates a PDA instance for a specific sequence of tokens.
+        
+        Args:
+            token_ids: List or tuple of token IDs (generation history).
+            prompt_idx: Index of the prompt template to use.
+            
+        Returns:
+            A PushdownAutomaton instance at the state corresponding to token_ids.
+        """
+        history_tuple = tuple(token_ids)
+        cache_key = (prompt_idx, history_tuple)
+        
+        # Check cache
+        if cache_key in self.pda_cache:
+            return self.pda_cache[cache_key].clone()
+            
+        # Fallback: Re-simulate (similar to internal logic)
+        pda = self.base_pdas[prompt_idx].clone()
+        for token in token_ids:
+            if pda.eos():
+                break
+            is_special = token in [self.tokenizer.bos_token_id, self.tokenizer.pad_token_id, getattr(self.tokenizer, 'unk_token_id', None)]
+            if is_special:
+                continue
+            try:
+                pda.next_state(token)
+            except Exception:
+                # If a token is invalid for the grammar, we stop advancing
+                break
+        return pda
