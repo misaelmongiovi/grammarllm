@@ -101,11 +101,13 @@ class PushdownAutomaton:
     
     def next_state(self, token_gen):
         logging.info(f"current terminals is:{self.current_terminals}")
-        check_terminals = set(self.map_tokens_terminals[token_gen]).intersection(set(self.current_terminals))
-        logging.info(f"check_terminals is: {check_terminals}")
+        # Use .get() to avoid KeyError if token_gen is not in the map
+        token_terminals = self.map_tokens_terminals.get(token_gen, [])
+        check_terminals = set(token_terminals).intersection(set(self.current_terminals))
+        logging.info(f"check_terminals for token {token_gen} is: {check_terminals} (Associated terminals: {token_terminals})")
 
 
-        assert len(check_terminals) == 1, f"Scelto un token '{token_gen}' ambiguo (trovati {len(check_terminals)} terminali: {check_terminals}), in quanto corrispondente a più possibili terminali per questo stato"
+        assert len(check_terminals) == 1, f"Scelto un token '{token_gen}' non valido o ambiguo (trovati {len(check_terminals)} terminali validi: {check_terminals}), in quanto corrispondente a {len(check_terminals)} possibili terminali per questo stato"
         terminal = list(check_terminals)[0]
         self.next_state_terminal(terminal)
         
@@ -140,3 +142,7 @@ class PushdownAutomaton:
         
     def eos(self):
         return True if not self.stack else False
+
+    def get_stack_debug_info(self):
+        """Returns a string representation of the stack for debugging."""
+        return f"Stack: {self.stack}"
