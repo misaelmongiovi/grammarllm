@@ -1,3 +1,45 @@
+"""
+logits_processor.py
+===================
+Implementa StatelessLogitsProcessor, il componente che vincola la generazione
+del modello alla grammatica LL(1) mascherando i logit ad ogni step.
+
+Posizione nella pipeline
+------------------------
+È il componente runtime centrale, attivo durante model.generate():
+
+    setup:  PushdownAutomaton (base_pdas)
+                    ↓
+    runtime: StatelessLogitsProcessor.__call__(input_ids, scores)
+                    ↓
+            get_tokens() → maschera logit → modello genera token valido
+                    ↓
+            next step: nuovo input_ids con il token generato
+
+Architettura "stateless"
+-------------------------
+A differenza di un approccio stateful (un PDA per beam aggiornato in-place),
+il processor ri-simula o recupera dalla cache lo stato PDA ad ogni step
+partendo dalla history dei token generati (input_ids).
+
+Questo è necessario per il beam search: HuggingFace può scartare e rimpiazzare
+beam tra uno step e l'altro, rendendo impossibile mantenere uno stato PDA
+"live" sincronizzato con il beam corrente.
+
+La verità è sempre input_ids: la history dei token generati determina univocamente
+lo stato PDA corrispondente.
+
+Cache LRU
+---------
+Per evitare la ri-simulazione completa O(L) ad ogni step, il processor mantiene
+una cache { (prompt_idx, history_tuple): PDA }.  Ad ogni step:
+  - Cache hit: clona il PDA cached (O(1)).
+  - Case A: prefix in cache → clona e avanza di 1 token (O(1)).
+  - Case B: nessun prefix → ri-simula da base_pda (O(L)).
+
+La cache usa una politica LRU tramite dict insertion-order: ogni accesso
+sposta la chiave in fondo (pop + reinsert), e l'eviction rimuove dal fronte.
+"""
 
 import logging
 from transformers import LogitsProcessor
@@ -8,15 +50,86 @@ from rich.table import Table
 from io import StringIO
 import os
 
+# FIX: cap the PDA cache to avoid unbounded memory growth during long generations.
+# Each entry stores a PDA object with its stack; with num_beams=5 and
+# max_new_tokens=512 this would otherwise accumulate ~2560 live PDA objects.
+_MAX_CACHE_SIZE = 2048
+
 class StatelessLogitsProcessor(LogitsProcessor):
+    """
+    LogitsProcessor HuggingFace che vincola la generazione a una grammatica LL(1)
+    re-simulando il PDA ad ogni step di generazione.
+
+    Architettura "stateless"
+    ------------------------
+    A differenza di un approccio stateful (dove un PDA viene aggiornato
+    incrementalmente), questo processore deriva lo stato del PDA direttamente
+    dalla history dei token generati (input_ids) ad ogni step. Questo è
+    necessario per il beam search, dove le hypothesis vengono rimescolate e
+    scambiate tra beam: un PDA stateful riceverebbe token di beam diversi
+    e si corromperebbe.
+
+    Ottimizzazione con cache
+    ------------------------
+    La re-simulation naïve è O(L) per step (L = lunghezza history). La cache
+    pda_cache = { (prompt_idx, history_tuple): pda_state } riduce il costo
+    a O(1) nel caso comune: si recupera lo stato del passo precedente e si
+    avanza di un solo token (Case A). La cache usa una politica LRU implementata
+    tramite pop+reinsert su dict Python 3.7+ (che preserva l'ordine di inserzione).
+
+    Integrazione
+    ------------
+    Istanziato da generate_with_constraints.generate_text():
+        stateless_processor = StatelessLogitsProcessor(
+            tokenizer, base_pdas, sequences_per_prompt, prompt_len, temperature
+        )
+        outputs = model.generate(..., logits_processor=[stateless_processor])
+    Dopo la generazione, generate_text() chiama get_pda_for_sequence()
+    per ricostruire pda_history nel risultato.
+    """
+
     def __init__(self, tokenizer, base_pdas, sequences_per_prompt=1, prompt_len=0, temperature=1.0):
         """
-        Args:
-            tokenizer: The model tokenizer.
-            base_pdas: List of template PDAs (one per prompt in the batch).
-            sequences_per_prompt: Number of sequences generated for each input prompt (max of num_beams and num_return_sequences).
-            prompt_len: Length of the prompt (to skip during re-simulation).
-            temperature: Softmax temperature (default 1.0).
+        Inizializza il processor con i PDA template e i parametri di generazione.
+
+        Parametri
+        ---------
+        tokenizer : HuggingFace tokenizer
+            Il tokenizer del modello.  Usato per:
+            - Identificare i token speciali (BOS, PAD, UNK) da saltare nella
+              re-simulation della history.
+            - Forzare il token EOS quando la grammatica è soddisfatta (eos_token_id).
+
+        base_pdas : list[PushdownAutomaton]
+            Lista di PDA template — uno per ogni prompt nel batch.
+            Vengono clonati (mai modificati) per ogni beam/sequenza.
+            Prodotti da generate_grammar_parameters() in generate_with_constraints.py.
+
+        sequences_per_prompt : int
+            Numero di sequenze generate per ogni prompt.
+            = max(num_beams, num_return_sequences).
+            Usato per mappare l'indice flat del batch (0..batch_size-1) al
+            prompt di origine: prompt_idx = i // sequences_per_prompt.
+
+        prompt_len : int
+            Lunghezza del prompt in token (inclusi token speciali).
+            = input_ids.shape[1] al momento della creazione del processor.
+            Usato per estrarre la history dei token generati da input_ids:
+            history = input_ids[i][prompt_len:]
+
+        temperature : float
+            Temperatura per scalare i logit prima del masking.
+            Applicata moltiplicando scores / temperature.
+
+        Stato interno
+        -------------
+        - pda_cache : dict { (prompt_idx, tuple(history)): PDA }
+            Cache LRU degli stati PDA.  Inizialmente vuota, si popola
+            durante la generazione.  Resettata da reset() prima di ogni
+            nuova generazione.
+        - original_scores_history, filtered_scores_history : list[Tensor]
+            Storico dei logit per analisi post-hoc.  NOTA: crescono senza
+            limite se reset() non viene chiamato tra generazioni.
         """
         self.tokenizer = tokenizer
         self.base_pdas = base_pdas
@@ -39,9 +152,23 @@ class StatelessLogitsProcessor(LogitsProcessor):
         # Detail Logger
         self.detail_logger = logging.getLogger("grammarllm.detail")
 
-    #currently not used but could be useful
     def reset(self):
-        """Resets the history, cache and log counter for a new generation."""
+        """
+        Svuota la cache PDA, le history dei logit e il contatore di log.
+
+        Deve essere chiamato prima di ogni nuova generazione per evitare
+        la crescita illimitata delle history (OOM su generazioni lunghe)
+        e per garantire che la cache non contenga stati obsoleti.
+
+        Integrazione
+        ------------
+        Chiamato esplicitamente da generate_with_constraints.generate_text()
+        immediatamente dopo aver istanziato il processor:
+            stateless_processor.reset()
+        Anche se il processor viene ricreato ad ogni chiamata a generate_text(),
+        il reset esplicito documenta l'invariante e protegge contro refactoring
+        futuri che potrebbero riutilizzare l'istanza.
+        """
         self.original_scores_history = []
         self.filtered_scores_history = []
         self.pda_cache = {}
@@ -49,7 +176,25 @@ class StatelessLogitsProcessor(LogitsProcessor):
 
     def log_comparison(self, orig_probs, filt_probs, beam_idx, step):
         """
-        Log Top 10 distribution Comparison using Rich Table.
+        Logga le top-10 distribuzioni originale e filtrata come Rich Table.
+
+        Utile per debug: mostra quali token avevano alta probabilità prima
+        del masking (distribuzione del modello) e quali rimangono dopo
+        (distribuzione vincolata dalla grammatica).
+
+        Performance
+        -----------
+        Questa funzione è costosa: costruisce e serializza una Rich Table
+        per ogni beam ad ogni step. Con num_beams=5 e max_new_tokens=200,
+        produce ~1000 tabelle. Per questo è protetta da:
+            if self.detail_logger.isEnabledFor(logging.DEBUG):
+        In produzione il logger è a livello INFO → nessun overhead.
+
+        Integrazione
+        ------------
+        Chiamata da __call__() solo se il detail_logger è in modalità DEBUG.
+        L'output va nel file grammarllm/temp/GRAM-DETAIL.log configurato
+        da generate_with_constraints.setup_logging().
         """
         # Get Top 10 for Original
         top_orig_val, top_orig_ind = torch.topk(orig_probs, 10)
@@ -85,9 +230,46 @@ class StatelessLogitsProcessor(LogitsProcessor):
 
     def __call__(self, input_ids, scores):
         """
-        Args:
-            input_ids: (batch_size * num_beams, seq_len)
-            scores: (batch_size * num_beams, vocab_size)
+        Applica il masking grammaticale ai logit ad ogni step di generazione.
+
+        Questo metodo è chiamato da HuggingFace model.generate() prima del
+        campionamento, per ogni step e per ogni sequenza nel batch.
+
+        Flusso per ogni sequenza i
+        --------------------------
+        1. Identifica il prompt di appartenenza: prompt_idx = i // sequences_per_prompt
+        2. Estrae la history generata: input_ids[i][prompt_len:]
+        3. Recupera/simula il PDA (con cache LRU):
+           - Cache hit: clone del PDA cached, LRU bookkeeping (pop+reinsert)
+           - Case A: clone dell'antenato (history[:-1]), avanza di 1 token
+           - Case B: clone del base PDA, replay dell'intera history
+        4. Maschera i logit: token non in pda.get_tokens() → -inf
+
+        Gestione EOS
+        ------------
+        Se pda.eos() (grammatica consumata): tutti i token → -inf tranne EOS.
+        Se pda.get_tokens() vuoto (dead-end): idem (fallback di sicurezza).
+
+        Invariante sull'errore
+        -----------------------
+        Se next_state() lancia ValueError durante la re-simulation, l'errore
+        viene propagato senza essere catturato. Questo significa che un token
+        invalido è entrato nella history — indica un bug nel masking upstream
+        o un token speciale non filtrato. Non viene mai usato un workaround.
+
+        Parameters
+        ----------
+        input_ids : torch.Tensor
+            Shape (batch_size * num_beams, seq_len). Contiene prompt + token
+            generati. I token generati iniziano all'indice prompt_len.
+        scores : torch.Tensor
+            Shape (batch_size * num_beams, vocab_size). Logit del modello.
+            Viene modificato in-place (mascheratura a -inf).
+
+        Returns
+        -------
+        torch.Tensor
+            scores modificato con i token invalidi mascherati a -inf.
         """
         batch_size = scores.shape[0]
         
@@ -139,8 +321,17 @@ class StatelessLogitsProcessor(LogitsProcessor):
 
             # 3. Retrieve or Re-Simulate PDA
             if cache_key in self.pda_cache:
-                # Cache Hit
-                pda = self.pda_cache[cache_key]
+                # Cache Hit.
+                # BUG FIX: return a clone, not the cached object itself.
+                # get_tokens() modifies current_terminals in-place; if two beams
+                # share the same history key (common in beam search) and we hand
+                # out the same object, step-4 calls on different batch indices
+                # corrupt each other's current_terminals.
+                # Mark the key as recently-used by reinserting it at the end
+                # (LRU bookkeeping — dict preserves insertion order in Python 3.7+).
+                _cached = self.pda_cache.pop(cache_key)
+                self.pda_cache[cache_key] = _cached
+                pda = _cached.clone()
             else:
                 # Cache Miss - Needs Re-simulation
                 # Optimization: Can we find a prefix in cache?
@@ -152,37 +343,70 @@ class StatelessLogitsProcessor(LogitsProcessor):
                 prefix_tuple = history_tuple[:-1]
                 
                 if len(history_tokens) > 0 and (prompt_idx, prefix_tuple) in self.pda_cache:
-                    # Case A: Linear Advance from Cache
-                    ancestor_pda = self.pda_cache[(prompt_idx, prefix_tuple)]
+                    # Case A: Linear Advance from Cache.
+                    # The prefix state is already validated and cached.
+                    # We only need to advance by the single new token.
+                    # If that token is invalid for the grammar, this sequence
+                    # is outside the language — raise immediately.
+                    # The old code caught the exception and fell back to full
+                    # re-simulation, which then silently resumed from a partial
+                    # state, effectively bypassing the grammar constraint.
+                    #
+                    # LRU bookkeeping: the ancestor is being actively used as
+                    # a parent for a new beam state.  Move it to the end of the
+                    # dict so it is not evicted before its children are built.
+                    ancestor_key = (prompt_idx, prefix_tuple)
+                    _ancestor = self.pda_cache.pop(ancestor_key)
+                    self.pda_cache[ancestor_key] = _ancestor
+                    ancestor_pda = _ancestor
                     pda = ancestor_pda.clone()
-                    try:
-                        last_token = history_tokens[-1]
-                        if not pda.eos():
-                            # Skip if special token (BOS/PAD)
-                            is_special = last_token in [self.tokenizer.bos_token_id, self.tokenizer.pad_token_id, getattr(self.tokenizer, 'unk_token_id', None)]
-                            if not is_special:
-                                pda.next_state(last_token)
-                        found_ancestor = True
-                    except Exception as e:
-                        logging.error(f"Error advancing cached PDA at history index {len(history_tokens)-1} (token={history_tokens[-1]}): {e}. Falling back to full re-simulation.")
-                        found_ancestor = False # Trigger fallback below
-                
+                    last_token = history_tokens[-1]
+                    if not pda.eos():
+                        is_special = last_token in [self.tokenizer.bos_token_id, self.tokenizer.pad_token_id, getattr(self.tokenizer, 'unk_token_id', None)]
+                        if not is_special:
+                            # Let ValueError propagate — a token the grammar
+                            # does not allow must never have been generated.
+                            # If it was, the masking step had a bug upstream.
+                            pda.next_state(last_token)
+                    found_ancestor = True
+
                 if not found_ancestor:
-                    # Case B: Full Re-simulation from Base (either no prefix or linear advance failed)
+                    # Case B: Full Re-simulation from Base.
+                    # This path is taken only when no cached prefix exists
+                    # (first token, or cache was evicted).
+                    # Every token in history_tokens was already masked by
+                    # this processor at the step it was generated, so every
+                    # token MUST be valid for the grammar.
+                    # If next_state raises, it means either:
+                    #   (a) the masking logic has a bug, or
+                    #   (b) a special token slipped through — skip it.
+                    # We no longer swallow grammar errors silently.
                     pda = base_pda.clone()
                     for token in history_tokens:
-                        try:
-                            if pda.eos():
-                                break
-                            is_special = token in [self.tokenizer.bos_token_id, self.tokenizer.pad_token_id, getattr(self.tokenizer, 'unk_token_id', None)]
-                            if is_special:
-                                continue
-                            pda.next_state(token)
-                        except Exception as e:
-                             if do_log: logging.debug(f"History mismatch at token {token}: {e}. {pda.get_stack_debug_info()}")
-                             break 
+                        if pda.eos():
+                            break
+                        is_special = token in [self.tokenizer.bos_token_id, self.tokenizer.pad_token_id, getattr(self.tokenizer, 'unk_token_id', None)]
+                        if is_special:
+                            continue
+                        # Propagate ValueError for truly invalid tokens.
+                        # A grammar violation here indicates a masking failure
+                        # at an earlier step — surface it so it can be fixed.
+                        pda.next_state(token) 
                 
-                # Store in cache
+                # Store in cache — evict least-recently-used entries when full.
+                # BUG FIX: the original FIFO policy evicted the *oldest* entries,
+                # which are the *shortest-prefix* states — exactly the most reusable
+                # ancestors for beam search.  Evicting them forces full re-simulation
+                # for all descendant beams that shared them.
+                # LRU is correct: evict the entries that have not been accessed
+                # recently (they are unlikely to be needed again).
+                # Python 3.7+ dicts preserve insertion order; we implement LRU by
+                # popping and re-inserting on every access (done in the cache-hit
+                # branch above) and evicting from the front here.
+                if len(self.pda_cache) >= _MAX_CACHE_SIZE:
+                    evict_count = _MAX_CACHE_SIZE // 4
+                    for lru_key in list(self.pda_cache.keys())[:evict_count]:
+                        del self.pda_cache[lru_key]
                 self.pda_cache[cache_key] = pda
 
             # 4. Get Valid Tokens & Mask
@@ -214,27 +438,62 @@ class StatelessLogitsProcessor(LogitsProcessor):
 
                     scores[i] = scores[i].masked_fill(mask, -float('inf'))
 
-        # Log Comparison (Original vs Filtered)
-        filtered_probs = F.softmax(scores, dim=-1)
-        for i in range(batch_size):
-             self.log_comparison(original_probs[i], filtered_probs[i], beam_idx=i, step=current_len)
+        # Log Comparison (Original vs Filtered) — only when detail logger is at DEBUG level.
+        # FIX: log_comparison builds and serializes a Rich Table for every beam at every step.
+        # With num_beams=5 and max_new_tokens=200 this causes ~1000 Rich Table renders
+        # and is the main production performance bottleneck. Guard it explicitly.
+        if self.detail_logger.isEnabledFor(logging.DEBUG):
+            filtered_probs = F.softmax(scores, dim=-1)
+            for i in range(batch_size):
+                self.log_comparison(original_probs[i], filtered_probs[i], beam_idx=i, step=current_len)
 
-        # Save history if needed
+        # Save score history for optional post-hoc analysis.
+        # BUG NOTE: these lists grow by one (batch_size, vocab_size) tensor per
+        # generation step and are never automatically cleared between calls.
+        # With vocab_size=128k, num_beams=5, max_new_tokens=512 this accumulates
+        # ~1.3 GB.  Callers that do not need score history should call
+        # processor.reset() after each generation, or set
+        # generate_kwargs["output_scores"] = False and avoid accessing these lists.
         self.original_scores_history.append(raw_scores)
         self.filtered_scores_history.append(scores.clone())
-        
+
         return scores
 
     def get_pda_for_sequence(self, token_ids, prompt_idx=0):
         """
-        Retrieves or simulates a PDA instance for a specific sequence of tokens.
-        
-        Args:
-            token_ids: List or tuple of token IDs (generation history).
-            prompt_idx: Index of the prompt template to use.
-            
-        Returns:
-            A PushdownAutomaton instance at the state corresponding to token_ids.
+        Restituisce un PDA avanzato alla posizione corrispondente a token_ids.
+
+        API pubblica per l'ispezione post-hoc dello stato del PDA.
+        Usata da generate_with_constraints.generate_text() dopo la generazione
+        per ricostruire la pda_history nel risultato:
+            for t in range(1, len(new_tokens) + 1):
+                pda_at_t = stateless_processor.get_pda_for_sequence(new_tokens[:t])
+                stack_history.append(list(pda_at_t.stack))
+
+        Ottimizzazione
+        --------------
+        Se la history è già in pda_cache (il che è quasi sempre vero,
+        perché __call__() ha già simulato tutti i prefissi durante la
+        generazione), restituisce un clone del PDA cachato senza ricalcolare.
+        Nel caso raro di cache miss, esegue una full re-simulation.
+
+        Invariante sull'errore
+        -----------------------
+        Come in __call__(), next_state() può propagare ValueError per token
+        invalidi. Non viene mai usato il vecchio pattern try/except break
+        che restituiva stati parziali (FIX Bug-2).
+
+        Parameters
+        ----------
+        token_ids : list[int] | tuple[int]
+            Sequenza di token ID (senza il prompt).
+        prompt_idx : int
+            Indice del prompt (0-based) per selezionare il base PDA corretto.
+
+        Returns
+        -------
+        PushdownAutomaton
+            Istanza clonata al passo corrispondente a token_ids.
         """
         history_tuple = tuple(token_ids)
         cache_key = (prompt_idx, history_tuple)
@@ -243,7 +502,12 @@ class StatelessLogitsProcessor(LogitsProcessor):
         if cache_key in self.pda_cache:
             return self.pda_cache[cache_key].clone()
             
-        # Fallback: Re-simulate (similar to internal logic)
+        # Fallback: Re-simulate from base PDA.
+        # BUG FIX: the old code caught ValueError silently and broke out of the
+        # loop, returning a partial PDA state — the same silent-bypass that was
+        # fixed in __call__.  This method is called to build pda_history in the
+        # final result; a partial state would misrepresent which tokens were
+        # actually consumed.  Let ValueError propagate so callers see the error.
         pda = self.base_pdas[prompt_idx].clone()
         for token in token_ids:
             if pda.eos():
@@ -251,9 +515,5 @@ class StatelessLogitsProcessor(LogitsProcessor):
             is_special = token in [self.tokenizer.bos_token_id, self.tokenizer.pad_token_id, getattr(self.tokenizer, 'unk_token_id', None)]
             if is_special:
                 continue
-            try:
-                pda.next_state(token)
-            except Exception:
-                # If a token is invalid for the grammar, we stop advancing
-                break
+            pda.next_state(token)   # ValueError propagates — no silent bypass
         return pda

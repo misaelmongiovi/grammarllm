@@ -1,113 +1,231 @@
+"""
+streamer.py
+===========
+Implementa il BaseStreamer per la generazione in tempo reale (greedy/sampling).
+
+Ruolo nel sistema
+-----------------
+Lo Streamer è il componente che riceve i token mano a mano che vengono
+generati da model.generate() e li gestisce in tempo reale. In GrammarLLM,
+il suo ruolo principale è duplice:
+
+1. **Logging in tempo reale**: decodifica e logga ogni token generato nel
+   momento esatto in cui viene prodotto, utile per monitorare la generazione.
+
+2. **Reset dei PDA a fine generazione**: quando generate() segnala il
+   completamento (end()), resetta tutti i PDA allo stato iniziale per
+   permettere una nuova generazione senza reinstanziare gli oggetti.
+
+Relazione con StatelessLogitsProcessor
+---------------------------------------
+In precedenza lo Streamer aggiornava anche lo stato del PDA (next_state per
+ogni token generato). Con l'introduzione di StatelessLogitsProcessor, lo
+stato del PDA è gestito interamente tramite re-simulation a partire da
+input_ids — lo Streamer non deve più aggiornare lo stato perché:
+  a) il LogitsProcessor ricalcola lo stato da zero ad ogni step
+  b) il beam search rimescola le sequenze tra beam, rendendo l'aggiornamento
+     incrementale del PDA non sicuro
+
+Il codice di aggiornamento PDA è quindi commentato (linee 79-83) e mantenuto
+solo per documentazione storica.
+
+Limitazione: solo greedy/sampling
+-----------------------------------
+HuggingFace Transformers non supporta lo Streamer con Beam Search
+(num_beams > 1). Per questo generate_with_constraints.generate_text() passa
+lo Streamer a model.generate() solo se num_beams == 1.
+
+Pipeline di integrazione
+------------------------
+    generate_grammar_parameters()
+        └─► BaseStreamer(tokenizer, pdas)
+              └─► passato a generate_text() come argomento `streamer`
+                    └─► model.generate(streamer=streamer)  [solo greedy]
+                          ├─► streamer.put(token) ad ogni step
+                          └─► streamer.end() a fine generazione
+"""
+
 import logging
+
+
 class BaseStreamer:
-    #Streamer has the functionality of updating PDA
-    #is still in use for real-time console logging for gready decoding without beam search
     """
-    Base class from which `.generate()` streamers should inherit.
-    Handles batch generation updating corresponding PDAs.
+    Streamer per la generazione token-by-token in modalità greedy/sampling.
+
+    Riceve i token da model.generate() in tempo reale, li logga, e al
+    termine resetta i PDA per permettere generazioni successive.
+
+    Attributi
+    ---------
+    tokenizer : transformers.PreTrainedTokenizer
+        Usato per decodificare i token ID in stringhe leggibili nel log.
+    pdas : list[PushdownAutomaton]
+        Lista dei PDA da resettare al termine della generazione.
+        Accetta sia un singolo PDA che una lista (normalizzato a lista in __init__).
+    is_first_call : bool
+        Flag per distinguere la prima chiamata a put() (che contiene il prompt)
+        dalle chiamate successive (che contengono i token generati).
+        Viene resettato a True in end() per preparare la prossima generazione.
+
+    Nota sul BUG-10
+    ---------------
+    Esiste un edge case: se tutti i PDA sono già in stato EOS prima che
+    inizi la generazione (manca un reset()), put() imposta is_first_call=True
+    e ritorna immediatamente, entrando in un loop permanente di discard.
+    L'unica protezione attuale è un logging.warning. In pratica non si
+    manifesta perché generate_text() chiama streamer.is_first_call = True
+    prima di ogni generazione.
     """
+
     def __init__(self, tokenizer, pda):
+        """
+        Inizializza lo Streamer con il tokenizer e i PDA da gestire.
+
+        Parameters
+        ----------
+        tokenizer : transformers.PreTrainedTokenizer
+            Tokenizer del modello. Usato solo per decodificare i token nel log.
+        pda : PushdownAutomaton | list[PushdownAutomaton]
+            PDA o lista di PDA. Se singolo, viene normalizzato a lista [pda].
+            I PDA vengono resettati in end() ma NON aggiornati in put()
+            (l'aggiornamento è delegato a StatelessLogitsProcessor).
+
+        Integrazione
+        ------------
+        Istanziato da generate_grammar_parameters() insieme alla lista di
+        PDA base, e restituito come secondo elemento della tupla:
+            pdas, streamer = generate_grammar_parameters(tokenizer, pars_tab, map_tt)
+        """
         self.tokenizer = tokenizer
-        # Supporta sia singolo PDA che lista
         self.pdas = pda if isinstance(pda, list) else [pda]
         self.is_first_call = True
-        
+
     def put(self, value):
-        """Function that is called by `.generate()` to push new tokens"""
-        
-        # Helper per check pda eos
+        """
+        Riceve un batch di token da model.generate() e li logga.
+
+        Chiamata da HuggingFace ad ogni step di generazione con i token
+        appena prodotti per tutte le sequenze nel batch.
+
+        Comportamento per chiamata
+        --------------------------
+        Prima chiamata (is_first_call=True):
+            Contiene il prompt iniziale (input_ids completo). Viene loggato
+            e scartato — non è un token generato dal modello.
+            is_first_call viene impostato a False.
+
+        Chiamate successive:
+            Contengono i token generati, uno per sequenza nel batch.
+            Solo la sequenza 0 viene loggata per ridurre la verbosità.
+            L'aggiornamento del PDA (next_state) è disabilitato: lo stato
+            è gestito interamente da StatelessLogitsProcessor.
+
+        Gestione del batch
+        ------------------
+        value può essere un tensor PyTorch di shape (batch_size,) o (1,)
+        oppure uno scalare. Viene normalizzato a una lista Python di interi.
+
+        Guardia EOS
+        -----------
+        Se tutti i PDA sono già in stato EOS all'inizio di put(), viene
+        emesso un warning (manca il reset()) e il metodo ritorna senza
+        processare i token. Questo evita crash ma segnala la condizione
+        anomala.
+
+        Parameters
+        ----------
+        value : torch.Tensor | int
+            Token ID o batch di token ID appena generati.
+        """
         def all_pdas_eos():
             return all(p.eos() for p in self.pdas)
 
-        # Se tutti i PDA hanno già finito ed è first call
         if all_pdas_eos() and self.is_first_call:
-             logging.warning(
-            "⚠️ PDA sono già in stato finale (stack vuoto) PRIMA dell'inizio di una nuova generazione. "
-            "Questo indica che manca un `pda.reset()` o che la grammatica è stata consumata interamente "
-            "nella generazione precedente e il pda non è stato resettao -> stack vuoto []"
-             )
-             # Non raise immediately per permettere robustezza, ma loggato
-             # raise "ERROR ON PDA RESET"
+            logging.warning(
+                "⚠️ PDA sono già in stato finale (stack vuoto) PRIMA dell'inizio "
+                "di una nuova generazione. Questo indica che manca un `pda.reset()` "
+                "o che la grammatica è stata consumata interamente nella generazione "
+                "precedente e il pda non è stato resettato -> stack vuoto []"
+            )
 
         if all_pdas_eos():
-             self.is_first_call = True
-             return
+            self.is_first_call = True
+            return
 
-        # Handle batch dimension in `value`
-        # value può essere un tensor di shape (batch_size,) o (1,) o scalar
+        # Normalizza il tensor/scalare a lista Python
         if hasattr(value, "shape") and len(value.shape) > 0:
             tokens_batch = value.view(-1).tolist()
         else:
-            # Fallback scalar
-             t = value.item() if hasattr(value, "item") else value
-             tokens_batch = [t]
+            t = value.item() if hasattr(value, "item") else value
+            tokens_batch = [t]
 
-        # Se è la prima chiamata, contiene il/i prompt iniziale/i
+        # Prima chiamata: contiene il prompt, non i token generati → scarta
         if self.is_first_call:
-            # Solitamente nella prima call, 'value' contiene l'intero prompt input_ids.
-            # Transformers streamer behavior:
-            # "The `put()` method receives `token_ids` that are generated by the model."
-            # Ma "Note that the `put()` method is called *after* the tokens are generated."
-            # Però spesso la prima call include il prompt se configurato in certi modi, o solo il primo token generato?
-            # BaseStreamer implementation originale assumeva che la prima call fosse il prompt iniziale (forse skip_prompt=True nel TextStreamer?)
-            # Assumendo comportamento originale: scartiamo la prima chiamata.
-            
-            # Solo log prima sequenza
             if len(tokens_batch) > 0:
-                gen_tok = tokens_batch[0]
-                logging.info(f"Valore ricevuto in put (Seq 0 - First Call): {gen_tok}")
-                logging.info(f"detokenizzato: {self.tokenizer.decode([gen_tok])}")
-
+                logging.info(f"Prompt input_ids (First Call): {tokens_batch}")
+                logging.info(f"Prompt decodificato (First Call): {self.tokenizer.decode(tokens_batch)}")
             self.is_first_call = False
-            return 
+            return
 
-        # Da qui in poi arrivano i token generati uno per volta (per sequence)
-        # Se batch_size = 1, tokens_batch ha 1 elemento.
-        # Se batch_size = 3, tokens_batch ha 3 elementi (i token nuovi per ogni seq).
-        
-        # Iteriamo su ogni sequenza del batch
+        # Chiamate successive: token generati dal modello
         for i, token_id in enumerate(tokens_batch):
-            # Log solo per prima sequenza
-            do_log = (i == 0)
-            
-            if do_log:
-                logging.info(f"Token generato (Seq {i}): {token_id} ({self.tokenizer.decode([token_id])})")
+            if i == 0:  # log solo prima sequenza per ridurre verbosità
+                logging.info(
+                    f"Token generato (Seq {i}): {token_id} "
+                    f"({self.tokenizer.decode([token_id])})"
+                )
 
             # STATE UPDATE DISABLED
-            # State is now managed by StatelessLogitsProcessor via re-simulation.
-            # do_log is used only for tracing generation
-            
-            # try:
-            #     pda.next_state(token_id)
-            #     if do_log:
-            #         logging.info(f"Stack PDA aggiornato (Seq {i}): {pda.stack[::-1]}")
-            # except Exception as e:
-
-
+            # Lo stato del PDA è ora gestito da StatelessLogitsProcessor
+            # tramite re-simulation a partire da input_ids. Lo Streamer
+            # non chiama più pda.next_state() per due motivi:
+            # 1. Il beam search rimescola le sequenze tra beam, rendendo
+            #    l'aggiornamento incrementale non affidabile.
+            # 2. StatelessLogitsProcessor garantisce la consistenza dello
+            #    stato ricalcolandolo da zero ad ogni step.
 
     def end(self):
         """
-        Chiamato da .generate() per segnalare fine generazione.
-        Resetta lo stato per permettere nuove generazioni.
+        Segnala la fine della generazione e resetta lo stato per il prossimo ciclo.
+
+        Chiamata automaticamente da model.generate() al completamento.
+        Esegue due operazioni:
+
+        1. Verifica di consistenza: controlla che tutti i PDA abbiano la pila
+           vuota (eos() == True). Se uno non lo è, emette un warning — indica
+           che la grammatica non è stata consumata completamente, possibilmente
+           perché la generazione è stata interrotta da max_new_tokens prima
+           che l'EOS token fosse generato.
+
+        2. Reset: imposta is_first_call=True e chiama pda.reset() su tutti i
+           PDA, riportandoli allo stato iniziale (stack = [startSymbol]).
+           Questo permette di riusare gli stessi oggetti nella prossima
+           chiamata a generate_text() senza reinstanziarli.
+
+        Nota sull'integrazione con StatelessLogitsProcessor
+        ----------------------------------------------------
+        Il reset dei PDA qui non influenza la cache di StatelessLogitsProcessor
+        (pda_cache), perché il processor viene ricreato fresh ad ogni chiamata
+        a generate_text() e reset() viene chiamato esplicitamente su di esso
+        prima della generazione. I due reset sono quindi indipendenti.
         """
         logging.info("=== Fine generazione ===")
-        
-        # Verifica finale consistenza per tutti i PDA
+
         all_empty = True
         for i, pda in enumerate(self.pdas):
             if not pda.eos():
-                logging.warning(f"⚠ Generazione terminata ma stack PDA {i} non vuoto: {pda.stack[::-1]}. Resetting PDA to ensure clean state for next generation.")
+                logging.warning(
+                    f"⚠ Generazione terminata ma stack PDA {i} non vuoto: "
+                    f"{pda.stack[::-1]}. Resetting PDA to ensure clean state "
+                    f"for next generation."
+                )
                 all_empty = False
 
-        
         if all_empty:
-             logging.info("✓ Tutti gli stack PDA correttamente vuoti")
-        
-        # Reset completo dello stato per tutti
+            logging.info("✓ Tutti gli stack PDA correttamente vuoti")
+
         self.is_first_call = True
         for pda in self.pdas:
-            pda.reset() 
+            pda.reset()
 
         logging.info("Streamer e tutti i PDA resettati per prossima generazione")
-
-        

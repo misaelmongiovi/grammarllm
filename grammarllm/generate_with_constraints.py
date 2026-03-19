@@ -1,3 +1,48 @@
+"""
+generate_with_constraints.py
+==============================
+Punto di ingresso pubblico di GrammarLLM. Espone le funzioni che l'utente
+chiama direttamente per vincolare la generazione di testo a una grammatica.
+
+Pipeline completa
+-----------------
+
+  Fase 1 — Setup (una volta per grammatica)
+  ------------------------------------------
+  pars_tab, map_tt = get_parsing_table_and_map_tt(tokenizer, productions)
+      │
+      ├─► ProductionRuleProcessor.process_full_grammar(productions)
+      │       Converte la grammatica utente (<<tag>>) in grammatica LL(1)
+      │
+      ├─► parsing_table(final_grammar)
+      │       Calcola FIRST/FOLLOW e costruisce la tabella LL(1)
+      │
+      └─► generate_token_maps(tokenizer, pars_tab)
+              Mappa terminali → token ID del vocabolario
+
+  Fase 2 — Preparazione parametri (una volta per sessione di generazione)
+  ------------------------------------------------------------------------
+  pdas, streamer = generate_grammar_parameters(tokenizer, pars_tab, map_tt)
+      │
+      └─► PushdownAutomaton(pars_tab, 'S*', map_tt)  × num_return_sequences
+
+  Fase 3 — Generazione (ogni chiamata)
+  -------------------------------------
+  result = generate_text(model, tokenizer, text, pdas, streamer, ...)
+      │
+      ├─► StatelessLogitsProcessor(tokenizer, pdas, ...)
+      ├─► model.generate(..., logits_processor=[stateless_processor])
+      └─► post-processing: prob, pda_history, decoded text
+
+Utilizzo tipico
+---------------
+    pars_tab, map_tt = get_parsing_table_and_map_tt(tokenizer, productions)
+    pdas, streamer   = generate_grammar_parameters(tokenizer, pars_tab, map_tt)
+    result = generate_text(model, tokenizer, "Classify:", pdas, streamer,
+                           max_new_tokens=10, num_beams=4)
+    print(result["text"])        # es. "positive"
+    print(result["probability"]) # es. 0.89
+"""
 from .scripts.grammar_generation import ProductionRuleProcessor
 from .scripts.map_terminal_tokens import generate_token_maps
 from .scripts.generate_LL1_parsing_table import parsing_table
@@ -12,6 +57,41 @@ import copy
 import torch
 
 def get_parsing_table_and_map_tt(tokenizer, productions, regex_dict=None):
+    """
+    Costruisce la tabella di parsing LL(1) e la mappa terminale→token_ID.
+
+    Prima funzione da chiamare. Il risultato è stabile per una data grammatica
+    e tokenizer, e va riutilizzato per tutte le generazioni successive.
+
+    Step interni
+    ------------
+    1. ProductionRuleProcessor.process_full_grammar(productions)
+       Converte la grammatica <<tag>> in grammatica LL(1) formale.
+    2. Aggiunge tokenizer.eos_token come produzione alternativa di S*,
+       in modo che il PDA raggiunga lo stato finale (stack vuoto) quando
+       il modello genera EOS.
+    3. parsing_table(final_grammar) → tabella LL(1) con FIRST/FOLLOW.
+    4. generate_token_maps(tokenizer, pars_tab) → terminale → [token_id].
+
+    Parameters
+    ----------
+    tokenizer : transformers.PreTrainedTokenizer
+    productions : dict[str, list[str]]
+        Grammatica utente: { 'S*': ['<<a>> A', '<<b>>'], 'A': ['<<x>>'] }
+    regex_dict : dict[str, re.Pattern], optional
+        Pattern regex per terminali aperti (es. numeri interi).
+        Chiavi nel formato 'regex_<nome_terminale>'.
+
+    Returns
+    -------
+    tuple[dict, dict]
+        (pars_tab, map_terminal_tokens)
+
+    Raises
+    ------
+    ValueError
+        Se la grammatica non è LL(1) o se un terminale non ha token nel vocab.
+    """
 
     processor = ProductionRuleProcessor(tokenizer=tokenizer)
     # Process the grammar productions
@@ -38,6 +118,36 @@ def get_parsing_table_and_map_tt(tokenizer, productions, regex_dict=None):
 
 
 def generate_grammar_parameters(tokenizer, pars_tab, map_terminal_tokens, num_return_sequences=1):
+    """
+    Istanzia i PDA base e lo Streamer per la sessione di generazione.
+
+    Crea num_return_sequences PDA indipendenti. Il primo viene costruito
+    direttamente, i successivi tramite deepcopy. Questa funzione si chiama
+    una volta per sessione; i PDA vengono poi passati a generate_text()
+    che li usa come template (clonandoli per ogni beam/step).
+
+    Perché deepcopy invece di clone()
+    -----------------------------------
+    I PDA base devono essere completamente indipendenti tra loro poiché
+    sono template di riferimento per tutta la sessione. clone() è usato
+    invece per le copie effimere durante la generazione in beam search.
+    Inconsistenza documentata come BUG-20.
+
+    Parameters
+    ----------
+    tokenizer : transformers.PreTrainedTokenizer
+    pars_tab : dict
+        Tabella LL(1) da get_parsing_table_and_map_tt().
+    map_terminal_tokens : dict
+        Mappa terminale→token_ID da get_parsing_table_and_map_tt().
+    num_return_sequences : int
+        Numero di sequenze per prompt (default 1).
+
+    Returns
+    -------
+    tuple[list[PushdownAutomaton], BaseStreamer]
+        (pdas, streamer) da passare a generate_text().
+    """
     # Create Pushdown Automaton based on num_return_sequences
     # We need independent PDA instances for each sequence because they maintain state
     
@@ -60,7 +170,25 @@ def generate_grammar_parameters(tokenizer, pars_tab, map_terminal_tokens, num_re
     return pdas, BaseStreamer(tokenizer, pdas)
 
 def setup_logging():
-    """Setup logging configuration."""
+    """
+    Configura il sistema di logging di GrammarLLM su due file.
+
+    File prodotti
+    -------------
+    grammarllm/temp/GRAM-GEN.log
+        Log principale (INFO). Flusso di elaborazione grammatica, FIRST/FOLLOW,
+        produzioni, metriche di generazione. Sovrascritto ad ogni chiamata.
+
+    grammarllm/temp/GRAM-DETAIL.log
+        Log di dettaglio per le distribuzioni logit. Contiene le Rich Table
+        top-10 di StatelessLogitsProcessor.log_comparison() (solo se DEBUG).
+        Non propagato al root logger per evitare duplicazione.
+
+    Note
+    ----
+    I file vengono sovrascritti (mode='w+') ad ogni chiamata.
+    Chiamare una sola volta all'inizio della sessione.
+    """
     log_dir = 'grammarllm/temp'
     os.makedirs(log_dir, exist_ok=True)  # Ensure the log directory exists
     
@@ -85,19 +213,64 @@ def setup_logging():
 
 def generate_text(model, tokenizer, text, logit_processor, streamer, chat_template = None, max_new_tokens=400, do_sample=False, top_p=None, num_return_sequences=1, return_pda_stack=True, **kwargs):
     """
-    Generate text using the provided model and tokenizer with grammar constraints.
+    Genera testo vincolato alla grammatica LL(1) usando model.generate().
 
-    Args:
-        model: pre-trained model.
-        tokenizer: model tokenizer.
-        text: input text or list of messages (if chat_template is used).
-        logit_processor: processor parameter
-        streamer: Streamer parameter
-        max_new_tokens: maximum number of new tokens to generate.
-        do_sample: if True, enables sampling; otherwise, uses greedy decoding.
-        top_p: nucleus sampling parameter (used if do_sample is True).
-        num_return_sequences: number of sequences to return.
-        **kwargs: additional generation parameters.
+    Funzione principale dell'API pubblica. Gestisce tokenizzazione, setup del
+    processor, chiamata a model.generate(), calcolo metriche e ricostruzione
+    della pda_history.
+
+    Modalità supportate
+    -------------------
+    Greedy:       do_sample=False, num_beams=1 (default)
+    Sampling:     do_sample=True, top_p=0.9
+    Beam search:  kwargs={'num_beams': 4}  (Streamer disabilitato da HF)
+
+    Input text
+    ----------
+    str:                     prompt singolo
+    list[dict] + template:  conversazione chat
+    list[str]:              batch di prompt (richiede un PDA per prompt)
+
+    Formato risultato
+    -----------------
+    return_pda_stack=True, num_return_sequences=1:
+        {"text": "positive", "probability": 0.89, "log_prob": -0.12,
+         "pda_history": [...], "pda_stack": []}
+
+    num_return_sequences=3:
+        [result_0, result_1, result_2]  (ordinati per probability desc)
+
+    return_pda_stack=False, output_scores=False, n_ret=1:
+        "positive"  (solo stringa)
+
+    Parameters
+    ----------
+    model : transformers.PreTrainedModel
+    tokenizer : transformers.PreTrainedTokenizer
+    text : str | list[str] | list[dict]
+    logit_processor : list[PushdownAutomaton]
+        Lista di PDA base da generate_grammar_parameters().
+    streamer : BaseStreamer
+    chat_template : str, optional
+    max_new_tokens : int
+    do_sample : bool
+    top_p : float, optional
+    num_return_sequences : int
+    return_pda_stack : bool
+        Se True: include pda_history e pda_stack. Se False: solo text/prob.
+    **kwargs
+        Passati a model.generate() (num_beams, temperature, ecc.).
+
+    Returns
+    -------
+    str | dict | list
+        Vedi "Formato risultato" sopra.
+
+    Raises
+    ------
+    RuntimeError
+        Wrappa qualsiasi eccezione interna. BUG-21: usare `raise ... from e`
+        preserverebbe il tipo originale per i caller.
     """
     
     try:
@@ -197,7 +370,18 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
             prompt_len=start_len,
             temperature=temperature
         )
-        
+
+        # BUG FIX: reset score history and PDA cache before every generation.
+        # original_scores_history and filtered_scores_history accumulate one
+        # (batch * beams, vocab_size) tensor per step and are never cleared
+        # automatically.  Without reset(), repeated calls to generate_text
+        # with the same processor instance would accumulate GBs of tensors.
+        # The new StatelessLogitsProcessor is created fresh each call so the
+        # cache starts empty, but the explicit reset() call makes the
+        # invariant visible and protects against future refactors that reuse
+        # the processor instance across calls.
+        stateless_processor.reset()
+
         streamer.is_first_call = True
 
         # Prepare kwargs for generate
