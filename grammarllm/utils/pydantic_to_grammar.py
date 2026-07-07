@@ -410,10 +410,46 @@ class _Translator:
             nt = f"{parent_nt}_{slot_name.upper()}"
             self._emit_enum(nt, schema["enum"])
             return nt
+        t = schema.get("type")
+        if t == "string":
+            return self._json_string_nt()
+        if t == "integer":
+            return self._json_int_nt()
+        if t == "number":
+            return self._json_number_nt()
+        if t == "boolean":
+            return self._json_bool_nt()
         raise PydanticGrammarError(
             f"Cannot translate value schema for '{parent_nt}.{slot_name}': "
             f"unrecognised shape {schema}"
         )
+
+    # ── shared primitive NTs (emitted once, reused everywhere) ─────────
+
+    def _json_string_nt(self) -> str:
+        if "JSON_STRING" not in self._productions:
+            self._productions["JSON_STRING"] = ['<<">> JSON_CHARS <<">>']
+            self._productions["JSON_CHARS"] = [f"{self._char_terminal} JSON_CHARS", "ε"]
+        return "JSON_STRING"
+
+    def _json_int_nt(self) -> str:
+        if "JSON_INT" not in self._productions:
+            self._productions["JSON_INT"] = [f"JSON_SIGN {self._digit_terminal} JSON_DIGITS"]
+            self._productions["JSON_SIGN"] = ["<<->>", "ε"]
+            self._productions["JSON_DIGITS"] = [f"{self._digit_terminal} JSON_DIGITS", "ε"]
+        return "JSON_INT"
+
+    def _json_number_nt(self) -> str:
+        if "JSON_NUMBER" not in self._productions:
+            self._json_int_nt()
+            self._productions["JSON_NUMBER"] = ["JSON_INT JSON_FRAC"]
+            self._productions["JSON_FRAC"] = [f"<<.>> {self._digit_terminal} JSON_DIGITS", "ε"]
+        return "JSON_NUMBER"
+
+    def _json_bool_nt(self) -> str:
+        if "JSON_BOOL" not in self._productions:
+            self._productions["JSON_BOOL"] = ["<<true>>", "<<false>>"]
+        return "JSON_BOOL"
 
     # ── enum (quotes inside the tag, D5) ───────────────────────────────
 
