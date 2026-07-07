@@ -412,6 +412,8 @@ class _Translator:
 
     def _value_symbol(self, parent_nt: str, slot_name: str, schema: dict[str, Any]) -> str:
         """Return the grammar symbol for a value slot, emitting sub-NTs as needed."""
+        if "$ref" in schema:
+            return self._ref_symbol(schema["$ref"])
         if "anyOf" in schema or "oneOf" in schema:
             nt = f"{parent_nt}_{slot_name.upper()}"
             self._emit_any_of(nt, schema)
@@ -432,6 +434,10 @@ class _Translator:
             return self._json_number_nt()
         if t == "boolean":
             return self._json_bool_nt()
+        if t == "object" or "properties" in schema or "allOf" in schema:
+            nt = f"{parent_nt}_{slot_name.upper()}"
+            self._emit_object_nt(nt, schema)
+            return nt
         raise PydanticGrammarError(
             f"Cannot translate value schema for '{parent_nt}.{slot_name}': "
             f"unrecognised shape {schema}"
