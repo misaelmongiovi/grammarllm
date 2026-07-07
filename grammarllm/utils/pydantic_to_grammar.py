@@ -313,6 +313,15 @@ class _Validator:
                 )
             branch_types.append(t or "enum")
 
+        # D7: int and float branches both start with a digit — guaranteed
+        # FIRST-set conflict at the token level.
+        if "integer" in branch_types and "number" in branch_types:
+            raise PydanticGrammarError(
+                f"[{path}] anyOf/oneOf mixes 'int' and 'float' branches. "
+                "Both start with a digit, so an LL(1) parser cannot tell them "
+                "apart. Use a single float field (ints are valid floats)."
+            )
+
         # Reject same-type branches (guaranteed FIRST conflict)
         seen_types: dict[str, int] = {}
         for idx, t in enumerate(branch_types):
@@ -403,6 +412,10 @@ class _Translator:
 
     def _value_symbol(self, parent_nt: str, slot_name: str, schema: dict[str, Any]) -> str:
         """Return the grammar symbol for a value slot, emitting sub-NTs as needed."""
+        if "anyOf" in schema or "oneOf" in schema:
+            nt = f"{parent_nt}_{slot_name.upper()}"
+            self._emit_any_of(nt, schema)
+            return nt
         if "const" in schema:
             # pydantic v2 emits single-value Literal["x"] as const, not enum.
             schema = {**schema, "enum": [schema["const"]]}
@@ -450,6 +463,21 @@ class _Translator:
         if "JSON_BOOL" not in self._productions:
             self._productions["JSON_BOOL"] = ["<<true>>", "<<false>>"]
         return "JSON_BOOL"
+
+    # ── anyOf / oneOf (Optional[X] → alternatives + <<null>>) ──────────
+
+    def _emit_any_of(self, nt: str, schema: dict[str, Any]) -> None:
+        branches = schema.get("anyOf", schema.get("oneOf", []))
+        alts: list[str] = []
+        branch_idx = 0
+        for branch in branches:
+            if branch.get("type") == "null":
+                continue
+            alts.append(self._value_symbol(nt, f"branch{branch_idx}", branch))
+            branch_idx += 1
+        if any(b.get("type") == "null" for b in branches):
+            alts.append("<<null>>")
+        self._productions[nt] = alts
 
     # ── enum (quotes inside the tag, D5) ───────────────────────────────
 
