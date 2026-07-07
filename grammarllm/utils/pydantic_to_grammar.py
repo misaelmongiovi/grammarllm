@@ -434,6 +434,10 @@ class _Translator:
             return self._json_number_nt()
         if t == "boolean":
             return self._json_bool_nt()
+        if t == "array":
+            nt = f"{parent_nt}_{slot_name.upper()}"
+            self._emit_array(nt, schema)
+            return nt
         if t == "object" or "properties" in schema or "allOf" in schema:
             nt = f"{parent_nt}_{slot_name.upper()}"
             self._emit_object_nt(nt, schema)
@@ -469,6 +473,16 @@ class _Translator:
         if "JSON_BOOL" not in self._productions:
             self._productions["JSON_BOOL"] = ["<<true>>", "<<false>>"]
         return "JSON_BOOL"
+
+    # ── array: right-recursive, empty allowed, ',' vs ']' disjoint ─────
+
+    def _emit_array(self, nt: str, schema: dict[str, Any]) -> None:
+        body_nt = f"{nt}_BODY"
+        tail_nt = f"{nt}_TAIL"
+        item_symbol = self._value_symbol(nt, "item", schema["items"])
+        self._productions[nt] = [f"<<[>> {body_nt}"]
+        self._productions[body_nt] = [f"{item_symbol} {tail_nt}", "<<]>>"]
+        self._productions[tail_nt] = [f"<<, >> {item_symbol} {tail_nt}", "<<]>>"]
 
     # ── anyOf / oneOf (Optional[X] → alternatives + <<null>>) ──────────
 
