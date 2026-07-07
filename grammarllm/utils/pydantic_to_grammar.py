@@ -60,27 +60,18 @@ class PydanticGrammarError(ValueError):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Default primitive-type → regex-terminal mapping
-#
-# These are the terminal *names* that will appear in the productions dict.
-# The caller must supply matching entries in regex_dict when calling
-# get_parsing_table_and_map_tt, e.g.:
-#
-#   regex_dict = {
-#       'regex_integer_token': re.compile(r'\d+'),
-#       'regex_number_token':  re.compile(r'\d+([.,]\d+)?'),
-#       'regex_string_token':  re.compile(r'[A-Za-z0-9_]+'),
-#   }
-#
-# You can override the mapping via the `type_terminal_map` argument of
-# pydantic_to_productions().
 # ─────────────────────────────────────────────────────────────────────────────
 
 DEFAULT_TYPE_TERMINAL_MAP: dict[str, str] = {
-    "integer": "integer_token",
-    "number":  "number_token",
-    "string":  "string_token",
-    "boolean": "boolean_token",   # 'true' | 'false' — caller supplies regex
+    "string": "json_char",
+    "integer": "digit",
+    "number": "digit",
 }
+
+_JSON_CHAR_REGEX = r'^[^"\\\x00-\x1f]+$'
+_DIGIT_REGEX = r"^[0-9]+$"
+
+_UNSAFE_LITERAL = re.compile(r'["\\\x00-\x1f]')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -360,217 +351,122 @@ class _Validator:
 
 class _Translator:
     """
-    Translates a validated JSON Schema into a GrammarLLM productions dict.
-
-    NT naming convention:
-        - Top-level model     →  'S*'  (reserved start symbol, always)
-        - $defs model         →  _nt_name(def_name)   e.g. 'ADDRESS'
-        - array tail NT       →  '<NT>_LIST'           e.g. 'TAG_LIST'
-        - allOf flattened     →  same as object
-        - anyOf               →  inline alternatives on the parent NT
+    Translates a validated JSON Schema into strict-JSON skeleton-chunk
+    productions (spec D3/D4/D5): keys are always present, every constant
+    JSON fragment between value slots is a single <<tag>>, and quotes
+    always belong to the string value NT.
     """
 
-    def __init__(
-        self,
-        defs: dict[str, Any],
-        type_terminal_map: dict[str, str],
-    ) -> None:
+    def __init__(self, defs: dict[str, Any], type_terminal_map: dict[str, str]) -> None:
         self._defs = defs
-        self._type_map = type_terminal_map
-        # Accumulated productions dict  {NT_name: [production_string, ...]}
+        self._char_terminal = type_terminal_map["string"]
+        self._digit_terminal = type_terminal_map["integer"]
         self._productions: dict[str, list[str]] = {}
-        # Track which $defs NTs have already been emitted (avoid duplicates)
         self._emitted: set[str] = set()
 
-    # ── Public entry point ───────────────────────────────────────────────────
-
     def translate(self, root_schema: dict[str, Any]) -> dict[str, list[str]]:
-        """
-        Translate *root_schema* (the top-level model schema) and return the
-        productions dict ready for ProductionRuleProcessor.
-        """
-        self._emit_nt("S*", root_schema)
+        if "$ref" in root_schema:
+            # Recursive root model: S* aliases the named def NT (Task 6).
+            self._productions["S*"] = [self._ref_symbol(root_schema["$ref"])]
+        else:
+            self._emit_object_nt("S*", root_schema)
         return self._productions
 
-    # ── NT emission ──────────────────────────────────────────────────────────
+    # ── object skeleton (D4) ───────────────────────────────────────────
 
-    def _emit_nt(self, nt: str, schema: dict[str, Any]) -> None:
-        """
-        Generate all production rules for *nt* from *schema* and add them to
-        self._productions.  Recursively emits referenced NTs.
-        """
+    def _emit_object_nt(self, nt: str, schema: dict[str, Any]) -> None:
         if nt in self._emitted:
             return
         self._emitted.add(nt)
-
-        schema = self._resolve(schema)
-
-        # ── object ───────────────────────────────────────────────────────────
-        if schema.get("type") == "object" or "properties" in schema:
-            self._emit_object(nt, schema)
-            return
-
-        # ── allOf → flatten into object ──────────────────────────────────────
         if "allOf" in schema:
-            flat = self._flatten_all_of(schema["allOf"])
-            self._emit_object(nt, flat)
-            return
-
-        # ── anyOf / oneOf ────────────────────────────────────────────────────
-        if "anyOf" in schema or "oneOf" in schema:
-            self._emit_any_of(nt, schema)
-            return
-
-        # ── enum ─────────────────────────────────────────────────────────────
-        if "enum" in schema:
-            self._emit_enum(nt, schema["enum"])
-            return
-
-        # ── array ─────────────────────────────────────────────────────────────
-        if schema.get("type") == "array":
-            self._emit_array(nt, schema)
-            return
-
-        # ── primitives ────────────────────────────────────────────────────────
-        primitive = schema.get("type")
-        if primitive in self._type_map:
-            terminal = self._type_map[primitive]
-            self._productions[nt] = [terminal]
-            return
-
-        raise PydanticGrammarError(
-            f"Cannot translate schema to NT '{nt}': unrecognised shape {schema}"
-        )
-
-    # ── Object translation ───────────────────────────────────────────────────
-
-    def _emit_object(self, nt: str, schema: dict[str, Any]) -> None:
-        """
-        object { "a": A, "b": B }
-        →  NT: ["<<a>> A_NT <<b>> B_NT"]
-
-        Fields are emitted in schema-definition order (deterministic).
-        Each field value becomes its own NT so the grammar stays LL(1).
-
-        BUG FIX (double epsilon): a non-required Optional[X] field has BOTH
-        signals — it is absent from 'required' AND its schema is an
-        anyOf [X, null].  _emit_any_of already appends an ε alternative for
-        the null branch; wrapping the field in a second `_OPT → NT | ε`
-        layer made ε derivable twice under the same FOLLOW set, which the
-        LL(1) table builder rejects ("Conflict: ... $ []").  The _OPT
-        wrapper is now added only when the field schema itself is NOT
-        already nullable.
-        """
+            schema = self._flatten_all_of(schema["allOf"])
         props = schema.get("properties", {})
-        required = set(schema.get("required", props.keys()))
         parts: list[str] = []
-
-        for field_name, field_schema in props.items():
-            field_nt = f"{nt}_{field_name.upper()}"
-            # Literal key as exact terminal
-            parts.append(f"<<{field_name}>>")
-            resolved = self._resolve(field_schema)
-            if field_name in required or _is_nullable(resolved):
-                # Required field, or Optional[X] whose anyOf-null branch
-                # already gives the NT its own ε alternative.
-                parts.append(field_nt)
-                self._emit_nt(field_nt, resolved)
-            else:
-                # Non-required, non-nullable (e.g. field with a default):
-                # wrap in an epsilon alternative.
-                opt_nt = f"{field_nt}_OPT"
-                parts.append(opt_nt)
-                self._emit_nt(field_nt, resolved)
-                self._productions[opt_nt] = [field_nt, "ε"]
-
+        chunk = "{"
+        for i, (field_name, field_schema) in enumerate(props.items()):
+            if _UNSAFE_LITERAL.search(field_name):
+                raise PydanticGrammarError(
+                    f"Field name {field_name!r} contains a quote, backslash or "
+                    "control character. v1 emits no JSON escape sequences — "
+                    "rename the field or use a safe alias."
+                )
+            if i:
+                chunk += ", "
+            chunk += f'"{field_name}": '
+            parts.append(f"<<{chunk}>>")
+            chunk = ""
+            parts.append(self._value_symbol(nt, field_name, field_schema))
+        parts.append("<<}>>")
         self._productions[nt] = [" ".join(parts)]
 
-    # ── allOf flattening ─────────────────────────────────────────────────────
+    # ── value slot dispatch ────────────────────────────────────────────
 
-    def _flatten_all_of(self, branches: list[dict]) -> dict[str, Any]:
-        """Merge all allOf branches into a single synthetic object schema."""
-        merged_props: dict[str, Any] = {}
-        merged_required: list[str] = []
-        for branch in branches:
-            resolved = self._resolve(branch)
-            merged_props.update(resolved.get("properties", {}))
-            merged_required.extend(resolved.get("required", []))
-        return {
-            "type": "object",
-            "properties": merged_props,
-            "required": list(dict.fromkeys(merged_required)),  # dedup, preserve order
-        }
+    def _value_symbol(self, parent_nt: str, slot_name: str, schema: dict[str, Any]) -> str:
+        """Return the grammar symbol for a value slot, emitting sub-NTs as needed."""
+        if "const" in schema:
+            # pydantic v2 emits single-value Literal["x"] as const, not enum.
+            schema = {**schema, "enum": [schema["const"]]}
+        if "enum" in schema:
+            nt = f"{parent_nt}_{slot_name.upper()}"
+            self._emit_enum(nt, schema["enum"])
+            return nt
+        raise PydanticGrammarError(
+            f"Cannot translate value schema for '{parent_nt}.{slot_name}': "
+            f"unrecognised shape {schema}"
+        )
 
-    # ── anyOf / oneOf translation ────────────────────────────────────────────
-
-    def _emit_any_of(self, nt: str, schema: dict[str, Any]) -> None:
-        """
-        anyOf / oneOf  →  one production alternative per non-null branch.
-        Optional[X]    →  [X_NT, "ε"]
-        """
-        branches = schema.get("anyOf", schema.get("oneOf", []))
-        non_null = [b for b in branches if b.get("type") != "null"]
-        nullable = len(non_null) < len(branches)
-
-        alternatives: list[str] = []
-        for idx, branch in enumerate(non_null):
-            branch_nt = f"{nt}_BRANCH{idx}"
-            self._emit_nt(branch_nt, branch)
-            alternatives.append(branch_nt)
-
-        if nullable:
-            alternatives.append("ε")
-
-        self._productions[nt] = alternatives
-
-    # ── enum translation ──────────────────────────────────────────────────────
+    # ── enum (quotes inside the tag, D5) ───────────────────────────────
 
     def _emit_enum(self, nt: str, values: list[Any]) -> None:
-        """enum ["a", "b", "c"]  →  NT: ["<<a>>", "<<b>>", "<<c>>"]"""
         alts: list[str] = []
         for v in values:
             if not isinstance(v, str):
                 raise PydanticGrammarError(
                     f"NT '{nt}': enum value {v!r} is not a string. "
-                    "GrammarLLM can only generate string tokens. "
-                    "Use Literal['a', 'b', 'c'] with string values."
+                    "Use Literal['a', 'b'] with string values."
                 )
-            alts.append(f"<<{v}>>")
+            if _UNSAFE_LITERAL.search(v):
+                raise PydanticGrammarError(
+                    f"NT '{nt}': enum value {v!r} contains a quote, backslash or "
+                    "control character; v1 emits no JSON escape sequences."
+                )
+            alts.append(f'<<"{v}">>')
         self._productions[nt] = alts
 
-    # ── array translation ─────────────────────────────────────────────────────
+    # ── allOf flattening (unchanged semantics) ─────────────────────────
 
-    def _emit_array(self, nt: str, schema: dict[str, Any]) -> None:
-        """
-        array of ITEM  →  NT:      ["ITEM_NT NT_LIST"]
-                          NT_LIST: ["ITEM_NT NT_LIST", "ε"]
+    def _flatten_all_of(self, branches: list[dict]) -> dict[str, Any]:
+        merged_props: dict[str, Any] = {}
+        merged_required: list[str] = []
+        for branch in branches:
+            resolved = self._inline(branch)
+            merged_props.update(resolved.get("properties", {}))
+            merged_required.extend(resolved.get("required", []))
+        return {
+            "type": "object",
+            "properties": merged_props,
+            "required": list(dict.fromkeys(merged_required)),
+        }
 
-        This is a right-recursive (tail-recursive) rule, which is LL(1).
-        """
-        item_nt = f"{nt}_ITEM"
-        list_nt = f"{nt}_LIST"
-        self._emit_nt(item_nt, schema["items"])
-        self._productions[nt] = [f"{item_nt} {list_nt}"]
-        self._productions[list_nt] = [f"{item_nt} {list_nt}", "ε"]
+    # ── helpers ────────────────────────────────────────────────────────
 
-    # ── helpers ───────────────────────────────────────────────────────────────
-
-    def _resolve(self, schema: dict[str, Any]) -> dict[str, Any]:
-        """
-        Follow a $ref if present, otherwise return the schema as-is.
-
-        BUG FIX: this used to ALSO emit a named NT for the def (e.g. ADDRESS)
-        and return a synthetic schema with a dead '_nt_ref' key that no caller
-        read.  The result was two parallel NT trees per $ref — the named one
-        (unreachable from S*) and the inlined per-field one — polluting the
-        grammar and the parsing table.  Refs are now purely inlined; cycle
-        safety is guaranteed because the validator already rejects cyclic
-        $ref chains in Phase 1.
-        """
+    def _inline(self, schema: dict[str, Any]) -> dict[str, Any]:
+        """Follow a $ref for inspection purposes only (no NT emission)."""
         if "$ref" in schema:
-            name = schema["$ref"][len("#/$defs/"):]
-            return self._defs[name]
+            return self._defs[schema["$ref"][len("#/$defs/"):]]
         return schema
+
+    def _ref_symbol(self, ref: str) -> str:
+        name = ref[len("#/$defs/"):]
+        nt = _nt_name(name)
+        if nt not in self._emitted:
+            target = self._defs[name]
+            if "enum" in target:
+                self._emitted.add(nt)
+                self._emit_enum(nt, target["enum"])
+            else:
+                self._emit_object_nt(nt, target)
+        return nt
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -580,7 +476,7 @@ class _Translator:
 def pydantic_to_productions(
     model: type,
     type_terminal_map: dict[str, str] | None = None,
-) -> dict[str, list[str]]:
+) -> tuple[dict[str, list[str]], dict[str, re.Pattern]]:
     """
     Convert a Pydantic BaseModel subclass into a GrammarLLM productions dict.
 
@@ -614,10 +510,10 @@ def pydantic_to_productions(
     >>> class Sentiment(BaseModel):
     ...     label: Literal["positive", "negative", "neutral"]
     ...
-    >>> productions = pydantic_to_productions(Sentiment)
+    >>> productions, regex_dict = pydantic_to_productions(Sentiment)
     >>> # productions == {
-    >>> #     'S*': ['<<label>> S*_LABEL'],
-    >>> #     'S*_LABEL': ['<<positive>>', '<<negative>>', '<<neutral>>'],
+    >>> #     'S*': ['<<{"label": >> S*_LABEL <<}>>'],
+    >>> #     'S*_LABEL': ['<<"positive">>', '<<"negative">>', '<<"neutral">>'],
     >>> # }
     """
     if BaseModel is None:
@@ -641,8 +537,14 @@ def pydantic_to_productions(
     validator = _Validator(defs=defs)
     validator.validate(schema, path=model.__name__)
 
-    # ── Phase 2: translation ─────────────────────────────────────────────────
+    # ── Phase 2: translation ─────────────────────────────────────────────
     translator = _Translator(defs=defs, type_terminal_map=ttmap)
     productions = translator.translate(schema)
 
-    return productions
+    # ── Regex terminals for open values (token-level regexes) ───────────
+    regex_dict = {
+        f"regex_{ttmap['string']}": re.compile(_JSON_CHAR_REGEX),
+        f"regex_{ttmap['integer']}": re.compile(_DIGIT_REGEX),
+    }
+
+    return productions, regex_dict
