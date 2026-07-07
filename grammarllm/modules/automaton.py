@@ -176,100 +176,91 @@ class PushdownAutomaton:
         Non svuota la cache di StatelessLogitsProcessor — quella viene resettata
         separatamente tramite stateless_processor.reset() in generate_text().
 
-        Nota: dopo reset(), current_terminals è impostato a [] e non viene
-        ricalcolato.  La prima chiamata a get_tokens() lo popolerà correttamente.
+        BUG FIX: reset() lasciava current_terminals = [] senza ricalcolarlo.
+        Questi PDA sono i template (base_pdas) riusati dalla generazione
+        successiva: un clone con current_terminals vuoto fa fallire il primo
+        next_state() con ValueError se il chiamante non passa prima da
+        get_tokens().  Ricalcoliamo subito, come fa __init__.
         """
         self.stack = [self.start_symbol]
-        self.current_terminals = []
+        self.get_tokens()
         logging.info(f"PDA resettato: stack = {self.stack}")
 
     def recursive_get_tokens(self, stack, visited=None):
         """
-        Calcola ricorsivamente i terminali validi come prossimo token, data
-        la configurazione corrente della pila.
+        Calcola i terminali validi come prossimo token, data la configurazione
+        corrente della pila.
 
-        Logica
-        ------
-        Partendo dalla cima della pila, espande i non-terminali sostituendoli
-        con le loro produzioni (usando la parsing table) e raccoglie i terminali
-        che compaiono in testa a qualsiasi produzione applicabile.
+        Logica (scan iterativo FIRST-of-stack)
+        ---------------------------------------
+        Il prossimo terminale valido è FIRST(α) dove α è il contenuto della
+        pila letto dalla cima verso il fondo.  La parsing table LL(1) codifica
+        già i FIRST set: per ogni NT, le chiavi delle entry NON-epsilon sono
+        esattamente FIRST(NT) - {ε} (compute_parsing_table inserisce la regola
+        A → α sotto ogni t ∈ FIRST(α) - {ε}), mentre la presenza di un'entry
+        epsilon ([]) indica che il NT è nullable.
 
-        La parsing table ha la struttura:
-            grammar[NT] = { lookahead_terminal: production_list }
+        Quindi basta scorrere la pila dall'alto:
+          - simbolo terminale → è l'unico consumabile qui; aggiungi e stop.
+          - NT → aggiungi le chiavi delle sue entry non-epsilon;
+                 se ha un'entry epsilon (nullable) continua col simbolo
+                 sottostante, altrimenti stop.
 
-        Iterando sui VALORI (le produzioni) invece che sulle chiavi (i lookahead),
-        si ottiene l'insieme dei terminali che possono comparire come prossimo
-        token.  Le produzioni epsilon ([]) richiedono un trattamento speciale:
-        non pushano nulla e ricorrono sul resto della pila, in modo che il
-        terminale valido sia il simbolo che si trova SOTTO il NT epsilon nella pila.
+        Bug fixati
+        ----------
+        BUG 1/2: vecchia versione pre-espansione (vedi storia git).
+
+        BUG 3 (visited over-pruning + costo esponenziale): la versione
+        ricorsiva usava un set `visited` per bloccare la ricorsione infinita,
+        ma il set bloccava anche la rivisita dello stesso NT presente più in
+        basso nella pila, escludendo continuazioni valide.  (Per tabelle che
+        superano la validazione LL(1) stretta quella configurazione implica
+        un conflitto FIRST/FOLLOW già rifiutato a monte, quindi il pruning
+        era per lo più latente — ma la ricorsione clonava pila e visited per
+        OGNI produzione a OGNI livello: costo esponenziale nel caso peggiore,
+        pagato ad ogni step di generazione.)  Lo scan iterativo è esatto,
+        fa un solo passaggio O(|stack| + |row|) e non può divergere.
 
         Parametri
         ---------
         stack : list[str]
-            Copia della pila corrente (non self.stack — questa funzione è
-            chiamata su copie per non modificare lo stato del PDA).
-
+            Copia della pila corrente (la cima è l'ULTIMO elemento,
+            coerentemente con stack.pop() usato altrove).
         visited : set[str] | None
-            Insieme dei non-terminali già visitati nel percorso di espansione
-            corrente.  Usato per prevenire la ricorsione infinita su grammatiche
-            con cicli.  Ogni ramo riceve una copia indipendente di visited.
+            Ignorato — mantenuto solo per compatibilità di firma con i
+            call-site legacy.
 
         Ritorna
         -------
         list[str]
-            Lista dei terminali (stringhe) validi come prossimo token.
-            Può contenere duplicati se più produzioni portano allo stesso
-            terminale; get_tokens() li deduplicerà tramite il mapping a token IDs.
-
-        Bug fixati
-        ----------
-        BUG 1: il vecchio codice iterava su grammar[top].keys() (i lookahead)
-               invece che sui valori (le produzioni), restituendo i lookahead
-               stessi come "terminali validi".  Per D → ε con tabella
-               {'1':[], '2':[], '3':[]}, restituiva ['1','2','3'] invece di
-               ricorrere sulla pila sottostante.
-
-        BUG 2: le produzioni epsilon [] non venivano gestite — non si pushava
-               nulla e si restituiva [], ignorando il resto della pila.
+            Lista deduplicata dei terminali validi come prossimo token.
 
         Collegamento
         ------------
         Chiamata solo da get_tokens().  Non è parte dell'API pubblica.
         """
-        if visited is None:
-            visited = set()
+        terminals = []
+        seen = set()
 
-        if not stack:
-            return []
+        for symbol in reversed(stack):
+            if symbol not in self.grammar:
+                # Terminale concreto in cima: è l'unico token consumabile qui.
+                if symbol not in seen:
+                    terminals.append(symbol)
+                break
 
-        top = stack.pop()
+            nullable = False
+            for lookahead, production in self.grammar[symbol].items():
+                if production == []:
+                    nullable = True
+                elif lookahead not in seen:
+                    seen.add(lookahead)
+                    terminals.append(lookahead)
 
-        if top in visited:
-            return []
+            if not nullable:
+                break
 
-        visited.add(top)
-
-        if top not in self.grammar:
-            return [top]
-
-        seen_productions = set()
-        tokens = []
-
-        for production in self.grammar[top].values():
-            prod_key = tuple(production)
-            if prod_key in seen_productions:
-                continue
-            seen_productions.add(prod_key)
-
-            if len(production) == 0:
-                tokens += self.recursive_get_tokens(list(stack), set(visited))
-            else:
-                new_stack = list(stack)
-                for sym in reversed(production):
-                    new_stack.append(sym)
-                tokens += self.recursive_get_tokens(new_stack, set(visited))
-
-        return tokens
+        return terminals
 
     def get_tokens(self):
         """

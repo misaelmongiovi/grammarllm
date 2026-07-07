@@ -149,7 +149,10 @@ class BaseStreamer:
             )
 
         if all_pdas_eos():
-            self.is_first_call = True
+            # BUG FIX: this used to also set is_first_call = True, which made
+            # EVERY subsequent put() treat its tokens as prompt tokens and
+            # discard them permanently (silent infinite-discard loop).
+            # Just skip this call without touching the first-call flag.
             return
 
         # Normalizza il tensor/scalare a lista Python

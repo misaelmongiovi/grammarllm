@@ -201,7 +201,8 @@ def setup_logging():
     
     # Define detailed logger
     detail_logger = logging.getLogger("grammarllm.detail")
-    detail_logger.setLevel(logging.INFO)
+    # detail_logger.setLevel(logging.INFO)
+    detail_logger.setLevel(logging.DEBUG)
     # Clear existing handlers to avoid duplicates if re-run
     if detail_logger.hasHandlers():
         detail_logger.handlers.clear()
@@ -368,7 +369,10 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
             base_pdas=base_pdas,
             sequences_per_prompt=sequences_per_prompt,
             prompt_len=start_len,
-            temperature=temperature
+            temperature=temperature,
+            # Score history costs one (batch, vocab) tensor per step —
+            # only track it when the caller actually asked for scores.
+            track_score_history=bool(kwargs.get("output_scores", False))
         )
 
         # BUG FIX: reset score history and PDA cache before every generation.
@@ -439,6 +443,7 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
                 
                 result_item = {
                     "text": decoded_text,
+                    "token_ids": new_tokens,
                     "probability": prob,
                     "log_prob": gen_log_prob
                 }
@@ -454,10 +459,33 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
                     result_item["pda_history"] = stack_history
                     # pda_stack remains the final state for backward compatibility
                     result_item["pda_stack"] = stack_history[-1] if stack_history else list(base_pdas[p_idx].stack)
+
                 if kwargs.get("output_scores", False):
                     result_item["transition_scores"] = transition_scores[i].tolist()
-                    result_item["scores"] = [score[i].tolist() for score in outputs.scores]
-                    result_item["original_scores"] = [score[i].tolist() for score in stateless_processor.original_scores_history]
+                    
+                    # Fix Beam Search Indexing:
+                    # When num_beams > 1, HF reorders the beams at each step. 
+                    # scores[t] contains (batch * beams) distributions.
+                    # outputs.beam_indices[i, t] tells us which beam produced the t-th token for sequence i.
+                    has_beams = hasattr(outputs, "beam_indices") and outputs.beam_indices is not None
+                    
+                    mapped_scores = []
+                    mapped_orig_scores = []
+                    for t in range(len(outputs.scores)):
+                        # beam_idx for sequence i at step t
+                        idx = outputs.beam_indices[i, t].item() if has_beams else i
+                        # BUG FIX: beam_indices is -1 for steps after the
+                        # sequence finished; -1 would silently index the LAST
+                        # row of scores, appending another beam's distribution.
+                        if idx < 0:
+                            break
+
+                        mapped_scores.append(outputs.scores[t][idx].tolist())
+                        if t < len(stateless_processor.original_scores_history):
+                            mapped_orig_scores.append(stateless_processor.original_scores_history[t][idx].tolist())
+                    
+                    result_item["scores"] = mapped_scores
+                    result_item["original_scores"] = mapped_orig_scores
                 
                 prompt_results.append(result_item)
                 
@@ -495,4 +523,7 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise RuntimeError(f"Errore nella generazione del testo: {e}")
+        # `from e` preserves the original exception type and traceback chain
+        # for callers that need to distinguish ValueError (grammar) from
+        # infrastructure errors.
+        raise RuntimeError(f"Errore nella generazione del testo: {e}") from e

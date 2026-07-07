@@ -88,7 +88,7 @@ class StatelessLogitsProcessor(LogitsProcessor):
     per ricostruire pda_history nel risultato.
     """
 
-    def __init__(self, tokenizer, base_pdas, sequences_per_prompt=1, prompt_len=0, temperature=1.0):
+    def __init__(self, tokenizer, base_pdas, sequences_per_prompt=1, prompt_len=0, temperature=1.0, track_score_history=False):
         """
         Inizializza il processor con i PDA template e i parametri di generazione.
 
@@ -118,8 +118,18 @@ class StatelessLogitsProcessor(LogitsProcessor):
             history = input_ids[i][prompt_len:]
 
         temperature : float
-            Temperatura per scalare i logit prima del masking.
-            Applicata moltiplicando scores / temperature.
+            DEPRECATO — non più applicata dal processor.
+            BUG FIX: il processor divideva scores / temperature, ma la
+            temperature passata in kwargs a model.generate() viene applicata
+            anche dal TemperatureLogitsWarper di HuggingFace (dopo i
+            logits_processor) → doppia applicazione con do_sample=True.
+            La temperatura è ora gestita esclusivamente da HF generate().
+            Il parametro resta per retro-compatibilità di firma.
+
+        track_score_history : bool
+            Se True, accumula original_scores_history / filtered_scores_history
+            (un tensor (batch, vocab) per step — costoso in memoria).
+            Default False: nessun clone e nessun accumulo.
 
         Stato interno
         -------------
@@ -136,7 +146,8 @@ class StatelessLogitsProcessor(LogitsProcessor):
         self.sequences_per_prompt = sequences_per_prompt
         self.prompt_len = prompt_len
         self.temperature = temperature
-        
+        self.track_score_history = track_score_history
+
         # History tracking (if requested)
         self.original_scores_history = []
         self.filtered_scores_history = []
@@ -278,25 +289,21 @@ class StatelessLogitsProcessor(LogitsProcessor):
         current_len = input_ids.shape[1]
         
 
-        if self.temperature != 1.0:
-            scores = scores / self.temperature
-        
+        # BUG FIX: temperature scaling removed from the processor.
+        # It was applied here AND by HuggingFace's TemperatureLogitsWarper
+        # (which runs after logits_processor when do_sample=True and
+        # `temperature` is in the generate kwargs) — double scaling.
+        # Temperature is now handled exclusively by HF generate().
+
         # Check if we should log based on logger level
-        do_log = logging.getLogger().getEffectiveLevel() <= logging.DEBUG
-        
-        # Log Logic: Log every step? The user asked for "distribution before and after"
-        # and "different sentences". For Beam Search, logging every step for every beam is verbose but requested.
-        # We will log ALL beams.
-        
-        # Calculate Original Distribution (Before Masking)
-        raw_scores = scores.clone() # Capturing original logits
-        original_probs = F.softmax(raw_scores, dim=-1)
-        
-        # Log Logic: Log every step? The user asked for "distribution before and after"
-        # and "different sentences". For Beam Search, logging every step for every beam is verbose but requested.
-        # We will log ALL beams.
-        
-        # We deferred logging 'original' to combine it with 'filtered' at the end.
+        do_log = logging.getLogger().getEffectiveLevel() <= logging.INFO
+
+        # Capture the original (pre-masking) logits only when needed:
+        # cloning a (batch, vocab) tensor every step is expensive and the
+        # history accumulation was the main OOM source on long generations.
+        do_detail_log = self.detail_logger.isEnabledFor(logging.DEBUG)
+        needs_original = self.track_score_history or do_detail_log
+        raw_scores = scores.clone() if needs_original else None
 
         for i in range(batch_size):
             # 1. Identify Parent Prompt
@@ -360,14 +367,11 @@ class StatelessLogitsProcessor(LogitsProcessor):
                     self.pda_cache[ancestor_key] = _ancestor
                     ancestor_pda = _ancestor
                     pda = ancestor_pda.clone()
-                    last_token = history_tokens[-1]
-                    if not pda.eos():
-                        is_special = last_token in [self.tokenizer.bos_token_id, self.tokenizer.pad_token_id, getattr(self.tokenizer, 'unk_token_id', None)]
-                        if not is_special:
-                            # Let ValueError propagate — a token the grammar
-                            # does not allow must never have been generated.
-                            # If it was, the masking step had a bug upstream.
-                            pda.next_state(last_token)
+                    # Let ValueError propagate for truly invalid tokens — a
+                    # token the grammar does not allow must never have been
+                    # generated.  _advance_token handles the legitimate
+                    # exceptions (special tokens, forced EOS).
+                    self._advance_token(pda, history_tokens[-1])
                     found_ancestor = True
 
                 if not found_ancestor:
@@ -383,15 +387,11 @@ class StatelessLogitsProcessor(LogitsProcessor):
                     # We no longer swallow grammar errors silently.
                     pda = base_pda.clone()
                     for token in history_tokens:
-                        if pda.eos():
-                            break
-                        is_special = token in [self.tokenizer.bos_token_id, self.tokenizer.pad_token_id, getattr(self.tokenizer, 'unk_token_id', None)]
-                        if is_special:
-                            continue
                         # Propagate ValueError for truly invalid tokens.
                         # A grammar violation here indicates a masking failure
                         # at an earlier step — surface it so it can be fixed.
-                        pda.next_state(token) 
+                        if not self._advance_token(pda, token):
+                            break
                 
                 # Store in cache — evict least-recently-used entries when full.
                 # BUG FIX: the original FIFO policy evicted the *oldest* entries,
@@ -442,22 +442,55 @@ class StatelessLogitsProcessor(LogitsProcessor):
         # FIX: log_comparison builds and serializes a Rich Table for every beam at every step.
         # With num_beams=5 and max_new_tokens=200 this causes ~1000 Rich Table renders
         # and is the main production performance bottleneck. Guard it explicitly.
-        if self.detail_logger.isEnabledFor(logging.DEBUG):
+        if do_detail_log:
+            original_probs = F.softmax(raw_scores, dim=-1)
             filtered_probs = F.softmax(scores, dim=-1)
             for i in range(batch_size):
                 self.log_comparison(original_probs[i], filtered_probs[i], beam_idx=i, step=current_len)
 
         # Save score history for optional post-hoc analysis.
-        # BUG NOTE: these lists grow by one (batch_size, vocab_size) tensor per
-        # generation step and are never automatically cleared between calls.
-        # With vocab_size=128k, num_beams=5, max_new_tokens=512 this accumulates
-        # ~1.3 GB.  Callers that do not need score history should call
-        # processor.reset() after each generation, or set
-        # generate_kwargs["output_scores"] = False and avoid accessing these lists.
-        self.original_scores_history.append(raw_scores)
-        self.filtered_scores_history.append(scores.clone())
+        # BUG FIX: previously appended unconditionally — one (batch, vocab)
+        # tensor per step (~1.3 GB with vocab=128k, 5 beams, 512 steps).
+        # Now gated behind track_score_history, set by generate_text() only
+        # when the caller asked for output_scores.
+        if self.track_score_history:
+            self.original_scores_history.append(raw_scores)
+            self.filtered_scores_history.append(scores.clone())
 
         return scores
+
+    def _advance_token(self, pda, token):
+        """
+        Avanza il PDA di un token durante la re-simulation della history.
+
+        Ritorna False quando il replay deve fermarsi:
+          - la grammatica è già completamente consumata (stack vuoto), oppure
+          - il token è l'EOS del modello ma NON è un terminale valido nello
+            stato corrente.  Questo accade quando __call__ ha forzato EOS via
+            il fallback dead-end (stack non vuoto ma nessun token valido):
+            quell'EOS non appartiene al linguaggio e chiamare next_state()
+            farebbe crashare la re-simulation di uno stato che il processor
+            stesso ha prodotto.
+
+        I token speciali (BOS/PAD/UNK) vengono saltati (ritorna True senza
+        avanzare).  Per ogni altro token invalido next_state() propaga
+        ValueError: indica un bug nel masking upstream e non va mai nascosto.
+        """
+        if pda.eos():
+            return False
+
+        if token in (self.tokenizer.bos_token_id, self.tokenizer.pad_token_id,
+                     getattr(self.tokenizer, 'unk_token_id', None)):
+            return True
+
+        if token == self.tokenizer.eos_token_id:
+            token_terminals = set(pda.map_tokens_terminals.get(token, []))
+            if not token_terminals.intersection(pda.current_terminals):
+                # EOS forced by the dead-end fallback — not a grammar move.
+                return False
+
+        pda.next_state(token)
+        return True
 
     def get_pda_for_sequence(self, token_ids, prompt_idx=0):
         """
@@ -510,10 +543,8 @@ class StatelessLogitsProcessor(LogitsProcessor):
         # actually consumed.  Let ValueError propagate so callers see the error.
         pda = self.base_pdas[prompt_idx].clone()
         for token in token_ids:
-            if pda.eos():
+            # ValueError propagates for invalid tokens — no silent bypass.
+            # _advance_token stops cleanly on grammar completion or forced EOS.
+            if not self._advance_token(pda, token):
                 break
-            is_special = token in [self.tokenizer.bos_token_id, self.tokenizer.pad_token_id, getattr(self.tokenizer, 'unk_token_id', None)]
-            if is_special:
-                continue
-            pda.next_state(token)   # ValueError propagates — no silent bypass
         return pda

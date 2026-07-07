@@ -130,7 +130,11 @@ def generate_token_maps(tokenizer, table_parsing, regex_dict=None):
         conflicts = []
         for lhs, rhs_list in table_parsing.items():
             for a, b in itertools.combinations(rhs_list.keys(), 2):
-                intersection = set(map_terminal_tokens[a]) & set(map_terminal_tokens[b])
+                # .get(): a lookahead key may legitimately be missing from the
+                # map (e.g. a regex terminal whose regex_dict entry was not
+                # provided) — the missing-terminal warning in Step 2 already
+                # covers it; don't crash the conflict check with a KeyError.
+                intersection = set(map_terminal_tokens.get(a, ())) & set(map_terminal_tokens.get(b, ()))
                 if intersection:
                     logging.info(f"Conflitto tra '{a}' e '{b}': {intersection}")
                     conflicts.append(

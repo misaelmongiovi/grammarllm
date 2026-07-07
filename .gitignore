@@ -15,3 +15,8 @@ collaboration/
 implementation_logic_report.md
 reports/
 old/
+test_scripts/
+/data
+/benchmark_tests
+result_t1
+utils/score_utils.py
