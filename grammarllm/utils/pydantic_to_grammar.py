@@ -130,8 +130,19 @@ class _Validator:
 
     def __init__(self, defs: dict[str, Any]) -> None:
         self._defs = defs
-        # Stack of $defs names currently being expanded — used for cycle detection.
-        self._expansion_stack: list[str] = []
+        # Stack of (def_name, breakable_count at push) — D6 cycle detection.
+        self._ref_stack: list[tuple[str, int]] = []
+        # Number of breakable edges (nullable-anyOf branch or array items)
+        # on the current descent path.
+        self._breakable_count = 0
+
+    def _validate_via_breakable_edge(self, schema: dict[str, Any], path: str) -> None:
+        """Descend through an edge the model can terminate (null / ])."""
+        self._breakable_count += 1
+        try:
+            self.validate(schema, path)
+        finally:
+            self._breakable_count -= 1
 
     def validate(self, schema: dict[str, Any], path: str = "root") -> None:
         """Entry point: validate *schema* rooted at *path* (for error messages)."""
@@ -186,7 +197,7 @@ class _Validator:
                     "Annotate your list field with a concrete element type, "
                     "e.g. list[str] instead of list."
                 )
-            self.validate(items, path=f"{path}[items]")
+            self._validate_via_breakable_edge(items, path=f"{path}[items]")
             return
 
         # ── primitives and enum ─────────────────────────────────────────────
@@ -218,25 +229,26 @@ class _Validator:
                 f"[{path}] Unsupported $ref '{ref}'. Only '#/$defs/<name>' is allowed."
             )
 
-        # ── Mutual cyclic recursion detection ───────────────────────────────
-        # If target_name is already on the expansion stack, we have a cycle.
-        # A → B → A  is mutual recursion.
-        # A → A  is direct recursion.
-        # Both are non-LL(1) unless mediated by a non-nullable prefix.
-        # We reject all cycles here; the user must break cycles with Optional.
-        if target_name in self._expansion_stack:
-            cycle = " → ".join(self._expansion_stack + [target_name])
-            raise PydanticGrammarError(
-                f"[{path}] Cyclic $ref detected: {cycle}. "
-                "Direct and mutual left recursion are not LL(1). "
-                "Break the cycle with Optional[...] or restructure the model so "
-                "that the recursive field is always preceded by at least one terminal."
-            )
+        # D6: a cycle is allowed iff at least one breakable edge (Optional
+        # value or array item) lies on the path since the ref was entered —
+        # the model can then terminate the recursion with null or ].
+        for name, count_at_push in self._ref_stack:
+            if name == target_name:
+                if self._breakable_count > count_at_push:
+                    return  # breakable cycle — this def is already being validated
+                raise PydanticGrammarError(
+                    f"[{path}] Cyclic $ref to '{target_name}' with no way to "
+                    "terminate: every field on the cycle is required and "
+                    "non-nullable, so generation could never end. Make one "
+                    "field on the cycle Optional[...] (or a list[...])."
+                )
 
         resolved = _resolve_ref(ref, self._defs)
-        self._expansion_stack.append(target_name)
-        self.validate(resolved, path=f"{path}→{target_name}")
-        self._expansion_stack.pop()
+        self._ref_stack.append((target_name, self._breakable_count))
+        try:
+            self.validate(resolved, path=f"{path}→{target_name}")
+        finally:
+            self._ref_stack.pop()
 
     # ── allOf validation ─────────────────────────────────────────────────────
 
@@ -305,13 +317,12 @@ class _Validator:
         for idx, branch in enumerate(non_null):
             resolved = _resolve_ref(branch["$ref"], self._defs) if "$ref" in branch else branch
             t = resolved.get("type")
-            if t is None and "enum" not in resolved:
+            if t is None and "enum" not in resolved and "properties" not in resolved:
                 raise PydanticGrammarError(
                     f"[{path}] anyOf/oneOf branch {idx} has no 'type' and no 'enum'. "
-                    "GrammarLLM cannot determine the FIRST set for this branch. "
                     "Each branch must be a concrete typed schema or an enum."
                 )
-            branch_types.append(t or "enum")
+            branch_types.append(t or ("enum" if "enum" in resolved else "object"))
 
         # D7: int and float branches both start with a digit — guaranteed
         # FIRST-set conflict at the token level.
@@ -335,10 +346,17 @@ class _Validator:
                 )
             seen_types[t] = idx
 
-        # Recurse into each non-null branch
+        # Recurse into each non-null branch.  Nullable unions descend via a
+        # breakable edge (the model can emit null instead of recursing), and
+        # $ref branches are dispatched through validate() so they hit
+        # _validate_ref and get D6 cycle tracking.
+        nullable = len(non_null) < len(branches)
         for idx, branch in enumerate(non_null):
-            resolved = _resolve_ref(branch["$ref"], self._defs) if "$ref" in branch else branch
-            self.validate(resolved, path=f"{path}/anyOf[{idx}]")
+            branch_path = f"{path}/anyOf[{idx}]"
+            if nullable:
+                self._validate_via_breakable_edge(branch, branch_path)
+            else:
+                self.validate(branch, branch_path)
 
     # ── object validation ────────────────────────────────────────────────────
 
