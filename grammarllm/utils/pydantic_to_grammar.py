@@ -68,8 +68,15 @@ DEFAULT_TYPE_TERMINAL_MAP: dict[str, str] = {
     "number": "digit",
 }
 
-_JSON_CHAR_REGEX = r'^[^"\\\x00-\x1f]+$'
+# Token-level regexes matched against raw vocabulary token strings.
+# Byte-level BPE tokenizers (GPT-2/Qwen style) store control bytes 0x00-0x1f
+# as the shifted printable characters U+0100-U+011F (e.g. '\n' -> 'Ċ'), so
+# those must be excluded too or the decoded text contains raw control
+# characters, which strict JSON forbids inside strings.
+_JSON_CHAR_REGEX = r'^[^"\\\x00-\x1fĀ-ğ]+$'
 _DIGIT_REGEX = r"^[0-9]+$"
+# First digit-run of an integer part: no leading zero (JSON: 0 | [1-9][0-9]*).
+_DIGIT_NZ_REGEX = r"^[1-9][0-9]*$"
 
 _UNSAFE_LITERAL = re.compile(r'["\\\x00-\x1f]')
 
@@ -474,8 +481,16 @@ class _Translator:
         return "JSON_STRING"
 
     def _json_int_nt(self) -> str:
+        # JSON forbids leading zeros: the integer part is 0 | [1-9][0-9]*.
+        # The first digit run therefore uses the non-zero-leading terminal
+        # (<digit>_nz), with a literal <<0>> as the only other alternative;
+        # continuation runs (JSON_DIGITS) may contain any digits.
         if "JSON_INT" not in self._productions:
-            self._productions["JSON_INT"] = [f"JSON_SIGN {self._digit_terminal} JSON_DIGITS"]
+            self._productions["JSON_INT"] = ["JSON_SIGN JSON_INT_BODY"]
+            self._productions["JSON_INT_BODY"] = [
+                "<<0>>",
+                f"{self._digit_terminal}_nz JSON_DIGITS",
+            ]
             self._productions["JSON_SIGN"] = ["<<->>", "ε"]
             self._productions["JSON_DIGITS"] = [f"{self._digit_terminal} JSON_DIGITS", "ε"]
         return "JSON_INT"
@@ -647,6 +662,7 @@ def pydantic_to_productions(
     regex_dict = {
         f"regex_{ttmap['string']}": re.compile(_JSON_CHAR_REGEX),
         f"regex_{ttmap['integer']}": re.compile(_DIGIT_REGEX),
+        f"regex_{ttmap['integer']}_nz": re.compile(_DIGIT_NZ_REGEX),
     }
 
     return productions, regex_dict
