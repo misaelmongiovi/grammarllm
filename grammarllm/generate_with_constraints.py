@@ -117,7 +117,8 @@ def get_parsing_table_and_map_tt(tokenizer, productions, regex_dict=None):
 
 
 
-def generate_grammar_parameters(tokenizer, pars_tab, map_terminal_tokens, num_return_sequences=1):
+def generate_grammar_parameters(tokenizer, pars_tab, map_terminal_tokens,
+                                num_return_sequences=1, token_lookahead=True):
     """
     Istanzia i PDA base e lo Streamer per la sessione di generazione.
 
@@ -142,6 +143,11 @@ def generate_grammar_parameters(tokenizer, pars_tab, map_terminal_tokens, num_re
         Mappa terminale→token_ID da get_parsing_table_and_map_tt().
     num_return_sequences : int
         Numero di sequenze per prompt (default 1).
+    token_lookahead : bool
+        Default True — masks are computed with the g_t_r lookahead engine,
+        allowing merged tokens across terminal boundaries (canonical
+        tokenization). Set False for the legacy boundary-strict engine,
+        used as the A/B baseline in preserved-mass measurements.
 
     Returns
     -------
@@ -153,7 +159,10 @@ def generate_grammar_parameters(tokenizer, pars_tab, map_terminal_tokens, num_re
     
     pdas = []
     base_pda = PushdownAutomaton(grammar=pars_tab, startSymbol='S*', map=map_terminal_tokens)
-    
+    # Token-boundary lookahead (spec L3): ON by default. Pass
+    # token_lookahead=False for the boundary-strict A/B baseline.
+    base_pda.lookahead = token_lookahead
+
     # If num_return_sequences is 1, we can just use one.
     # If >1, we need to clone it or create new ones.
     # Cloning is safer if PushdownAutomaton initialization is heavy, but here it's light.

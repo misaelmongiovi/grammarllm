@@ -50,6 +50,11 @@ from rich.table import Table
 from io import StringIO
 import os
 
+try:
+    from .lookahead import lookahead_tokens, get_vocab_trie
+except ImportError:
+    from lookahead import lookahead_tokens, get_vocab_trie
+
 # FIX: cap the PDA cache to avoid unbounded memory growth during long generations.
 # Each entry stores a PDA object with its stack; with num_beams=5 and
 # max_new_tokens=512 this would otherwise accumulate ~2560 live PDA objects.
@@ -155,8 +160,14 @@ class StatelessLogitsProcessor(LogitsProcessor):
         # Cache for PDA states: { tuple(token_ids): pda_state }
         # Key: tuple of tokens (history)
         # Value: PDA object (cloned and advanced)
-        self.pda_cache = {} 
-        
+        self.pda_cache = {}
+
+        # Digest-keyed lookahead mask cache: {(tuple(stack), residue): {tid: path}}
+        self.mask_cache = {}
+        self.vocab_trie = None
+        if any(getattr(p, "lookahead", False) for p in base_pdas):
+            self.vocab_trie = get_vocab_trie(tokenizer)
+
         # Logging limiter
         self.log_counter = 0
         
@@ -183,6 +194,7 @@ class StatelessLogitsProcessor(LogitsProcessor):
         self.original_scores_history = []
         self.filtered_scores_history = []
         self.pda_cache = {}
+        self.mask_cache = {}
         self.log_counter = 0
 
     def log_comparison(self, orig_probs, filt_probs, beam_idx, step):
@@ -417,7 +429,7 @@ class StatelessLogitsProcessor(LogitsProcessor):
                 scores[i, :] = -float("inf")
                 scores[i, self.tokenizer.eos_token_id] = 0
             else:
-                valid_tokens = pda.get_tokens()
+                valid_tokens, _paths = self._valid_ids(pda)
                 
                 if not valid_tokens:
                      # No valid tokens but stack not empty? Dead end logic
@@ -478,19 +490,51 @@ class StatelessLogitsProcessor(LogitsProcessor):
         """
         if pda.eos():
             return False
-
         if token in (self.tokenizer.bos_token_id, self.tokenizer.pad_token_id,
                      getattr(self.tokenizer, 'unk_token_id', None)):
             return True
-
         if token == self.tokenizer.eos_token_id:
-            token_terminals = set(pda.map_tokens_terminals.get(token, []))
-            if not token_terminals.intersection(pda.current_terminals):
-                # EOS forced by the dead-end fallback — not a grammar move.
-                return False
-
-        pda.next_state(token)
+            valid, paths = self._valid_ids(pda)
+            if token not in valid:
+                return False        # EOS forced by the dead-end fallback
+            self._advance(pda, token, paths)
+            return True
+        self._advance(pda, token)
         return True
+
+    def _valid_ids(self, pda):
+        """
+        Valid next token ids for *pda*, routed by engine.
+
+        Legacy: (pda.get_tokens(), None).
+        Lookahead: (ids, paths) from the digest-memoized g_t_r mask.
+        """
+        if not getattr(pda, "lookahead", False):
+            return pda.get_tokens(), None
+        digest = (tuple(pda.stack), pda.residue)
+        entry = self.mask_cache.get(digest)
+        if entry is None:
+            entry = lookahead_tokens(pda, self.vocab_trie)
+            if len(self.mask_cache) >= _MAX_CACHE_SIZE:
+                for old_key in list(self.mask_cache.keys())[:_MAX_CACHE_SIZE // 4]:
+                    del self.mask_cache[old_key]
+            self.mask_cache[digest] = entry
+        return list(entry.keys()), entry
+
+    def _advance(self, pda, token, paths=None):
+        """Consume *token* on *pda*, routed by engine. ValueError on invalid."""
+        if not getattr(pda, "lookahead", False):
+            pda.next_state(token)
+            return
+        if paths is None:
+            _, paths = self._valid_ids(pda)
+        path = paths.get(token)
+        if path is None:
+            raise ValueError(
+                f"Token {token} is not derivable from state "
+                f"(stack={pda.stack}, residue={pda.residue!r}) under lookahead"
+            )
+        pda.apply_lookahead_path(*path)
 
     def get_pda_for_sequence(self, token_ids, prompt_idx=0):
         """
