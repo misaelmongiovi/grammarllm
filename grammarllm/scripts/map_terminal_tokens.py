@@ -37,6 +37,11 @@ import re
 import itertools
 import logging
 
+try:
+    from ..modules.lookahead import REGEX_TERMINALS_KEY
+except ImportError:                      # bare-import test path
+    from lookahead import REGEX_TERMINALS_KEY
+
 
 def generate_token_maps(tokenizer, table_parsing, regex_dict=None):
     """
@@ -186,5 +191,11 @@ def generate_token_maps(tokenizer, table_parsing, regex_dict=None):
     conflicts = check_tokens_conflicts(table_parsing, map_terminal_tokens)
     if conflicts:
         raise ValueError("\n".join(conflicts))
+
+    # Metadata channel for the lookahead engine: which terminal names are
+    # open regex classes (DFS must not spell them character-by-character).
+    map_terminal_tokens[REGEX_TERMINALS_KEY] = (
+        sorted(name[len("regex_"):] for name in regex_dict) if regex_dict else []
+    )
 
     return map_terminal_tokens

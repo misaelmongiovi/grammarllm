@@ -18,6 +18,11 @@ Flusso dati:
 
 import logging
 
+try:
+    from .lookahead import REGEX_TERMINALS_KEY
+except ImportError:                      # bare-import test path
+    from lookahead import REGEX_TERMINALS_KEY
+
 
 class PushdownAutomaton:
     """
@@ -102,8 +107,14 @@ class PushdownAutomaton:
         self.grammar = grammar
         self.map_terminals_tokens = map
         self.map_tokens_terminals = {}
+        # ── lookahead state (spec L1) ─────────────────────────────────
+        self.residue = ""            # unconsumed suffix of a partially-covered terminal
+        self.lookahead = False       # engine flag, set by generate_grammar_parameters
+        self.regex_terminals = set(map.get(REGEX_TERMINALS_KEY, []))
 
         for non_terminal, value in map.items():
+            if non_terminal == REGEX_TERMINALS_KEY:
+                continue             # metadata, not a terminal→tokens entry
             if isinstance(value, dict):
                 for terminal, tokens in value.items():
                     if isinstance(tokens, list):
@@ -162,6 +173,9 @@ class PushdownAutomaton:
         new_pda.map_tokens_terminals = self.map_tokens_terminals
         new_pda.current_terminals = list(getattr(self, 'current_terminals', []))
         new_pda.stack = list(self.stack)
+        new_pda.residue = self.residue
+        new_pda.lookahead = self.lookahead
+        new_pda.regex_terminals = self.regex_terminals   # read-only, shared
 
         return new_pda
 
@@ -183,6 +197,7 @@ class PushdownAutomaton:
         get_tokens().  Ricalcoliamo subito, come fa __init__.
         """
         self.stack = [self.start_symbol]
+        self.residue = ""
         self.get_tokens()
         logging.info(f"PDA resettato: stack = {self.stack}")
 
@@ -420,6 +435,36 @@ class PushdownAutomaton:
                 f"Remaining stack: {stack}"
             )
 
+    def apply_lookahead_path(self, fragments, chars_into_last):
+        """
+        Consume a merged token described by its lookahead path.
+
+        fragments : tuple[str, ...]
+            Terminal strings the token covers, in order. If self.residue is
+            non-empty, fragments[0] IS the residue (grammar already advanced
+            for it — only its characters remain to be spelled).
+        chars_into_last : int
+            How many characters of fragments[-1] the token covers.
+            == len(fragments[-1]) → fully consumed, residue becomes "".
+
+        Grammar-advance strategy: a terminal is consumed from the stack the
+        moment the token ENTERS it (next_state_terminal); the unspelled
+        suffix lives in self.residue. eos() stays False until the residue
+        is spelled out.
+        """
+        for i, frag in enumerate(fragments):
+            last = (i == len(fragments) - 1)
+            if i == 0 and self.residue:
+                if frag != self.residue:
+                    raise ValueError(
+                        f"Lookahead path expected residue {self.residue!r}, got {frag!r}"
+                    )
+                self.residue = frag[chars_into_last:] if last else ""
+                continue
+            self.next_state_terminal(frag)
+            self.residue = frag[chars_into_last:] if last else ""
+        self.get_tokens()
+
     def eos(self):
         """
         Indica se la grammatica è stata completamente soddisfatta.
@@ -443,7 +488,7 @@ class PushdownAutomaton:
         non porta la pila a zero, eos() restituisce False anche dopo aver
         generato EOS — questo è il BUG-4 documentato, ancora aperto.
         """
-        return True if not self.stack else False
+        return not self.stack and not self.residue
 
     def get_stack_debug_info(self):
         """
