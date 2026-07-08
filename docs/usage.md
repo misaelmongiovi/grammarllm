@@ -161,6 +161,15 @@ Notes:
 - With `num_return_sequences > 1` and `num_beams == 1`, sampling is enabled automatically.
 - The streamer (live token logging) is active only for `num_beams == 1`; HF does not support streamers with beam search.
 - Beam search is safe by construction: parser state is re-derived from each beam's token history at every step, so HF beam reordering cannot corrupt it.
+- Token-boundary lookahead is ON by default: masks include the model's
+  natural merged tokens (e.g. `": ` or `{ ci`) even when they span grammar
+  terminals, so generation follows the canonical tokenization. Pass
+  `generate_grammar_parameters(..., token_lookahead=False)` for the
+  boundary-strict legacy engine — useful as the A/B baseline when measuring
+  constraint impact with `compare_analyses(..., metric="preserved_mass")`
+  (measured on Qwen2.5-0.5B, lookahead raises mean preserved mass ~2.5×).
+  Merged tokens stop at regex-terminal boundaries (see
+  `docs/superpowers/specs/2026-07-08-regex-lookahead-future-work.md`).
 - Any extra kwarg is forwarded to `model.generate()`.
 
 ## Result format

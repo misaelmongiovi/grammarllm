@@ -11,6 +11,7 @@ It allows you to define and apply constraints via formal grammars, ideal for cla
 * 🤗 **Compatible with Hugging Face Transformers**
 * ⚡️ **Linear-time decoding via deterministic PDA** — efficient grammar-constrained generation
 * 🔦 **Beam Search Support** — stateless PDA re-simulation makes beam reordering safe
+* 🔤 **Canonical tokenization by default** — trie-guided lookahead lets the model emit its natural merged tokens across grammar boundaries (opt-out flag for A/B baselines)
 * 🎲 **Sampling, batching, multiple return sequences** — all `model.generate()` modes
 * 📊 **Constraint-impact analysis** — per-step preserved probability mass, entropy, plots
 * 🧬 **Pydantic → grammar conversion** — derive a strict-JSON grammar from a `BaseModel`
