@@ -192,7 +192,7 @@ A larger grammar mixing exact strings, non-terminals, and regex terminals:
     # <http://example.org/people/GiovanniBianchi><http://example.org/properties/hasAge>"30"^^<http://www.w3.org/2001/XMLSchema#integer>.
 ```
 
-### 🧬 Pydantic → Grammar (experimental)
+### 🧬 Pydantic → Grammar
 
 ```python
 from typing import Literal, Optional
