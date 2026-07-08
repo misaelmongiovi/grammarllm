@@ -19,7 +19,7 @@
 - Reserved NT names produced by the translator: `S*`, `JSON_STRING`, `JSON_CHARS`, `JSON_INT`, `JSON_SIGN`, `JSON_DIGITS`, `JSON_NUMBER`, `JSON_FRAC`, `JSON_BOOL`, plus `<PARENT>_<FIELD>`, `<NT>_BODY`, `<NT>_TAIL`, `<NT>_BRANCH<i>`, and uppercased `$defs` names.
 - Regex terminals: `json_char` → `^[^"\\\x00-\x1f]+$`, `digit` → `^[0-9]+$` (token-level: each regex matches whole vocabulary token strings).
 - No JSON escape sequences in v1 (`"`, `\`, control chars excluded from string content) — documented limitation, and enum values / field names containing them are rejected at conversion time.
-- **Tests are NOT committed**: `grammarllm/antigravity_tests/` is gitignored by user choice. Every commit step adds source/docs only; tests stay local. Run tests with `uv run --with pytest pytest …` (project venv has no pytest).
+- **Tests are NOT committed**: `grammarllm/tests/` is gitignored by user choice. Every commit step adds source/docs only; tests stay local. Run tests with `uv run --with pytest pytest …` (project venv has no pytest).
 - All conversion failures raise `PydanticGrammarError` with messages naming the offending field and the fix, phrased in pydantic vocabulary.
 
 ## File Structure
@@ -27,8 +27,8 @@
 | File | Responsibility |
 |---|---|
 | `grammarllm/utils/pydantic_to_grammar.py` (rewrite in place) | `PydanticGrammarError`, `_Validator` (Phase 1: reject non-LL(1) constructs, D6/D7), `_Translator` (Phase 2: schema → skeleton-chunk productions), `pydantic_to_productions()` public API |
-| `grammarllm/antigravity_tests/test_pydantic_json.py` (new, local-only) | All four test layers for the new behavior |
-| `grammarllm/antigravity_tests/test_pydantic_to_grammar.py` (delete in Task 9) | Old compact-format tests; still-valid rejection tests move to the new file |
+| `grammarllm/tests/test_pydantic_json.py` (new, local-only) | All four test layers for the new behavior |
+| `grammarllm/tests/test_pydantic_to_grammar.py` (delete in Task 9) | Old compact-format tests; still-valid rejection tests move to the new file |
 | `docs/usage.md`, `README.md` (modify in Task 9) | Replace "experimental compact" pydantic sections with the strict-JSON API |
 
 ---
@@ -37,7 +37,7 @@
 
 **Files:**
 - Modify: `grammarllm/utils/pydantic_to_grammar.py` (module constants, `_Translator.__init__/translate/_emit_object_nt/_emit_enum/_value_symbol`, `pydantic_to_productions` return type)
-- Test: `grammarllm/antigravity_tests/test_pydantic_json.py` (new)
+- Test: `grammarllm/tests/test_pydantic_json.py` (new)
 
 **Interfaces:**
 - Consumes: existing `PydanticGrammarError`, `_Validator`, `_nt_name`, `_resolve_ref` (unchanged in this task).
@@ -45,7 +45,7 @@
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `grammarllm/antigravity_tests/test_pydantic_json.py`:
+Create `grammarllm/tests/test_pydantic_json.py`:
 
 ```python
 """
@@ -129,7 +129,7 @@ class TestTupleApiAndSkeleton:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py -q`
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py -q`
 Expected: FAIL — `test_returns_productions_and_regex_dict` errors with "cannot unpack non-sequence dict" (old API returns a dict), the others fail on assertions.
 
 - [ ] **Step 3: Implement**
@@ -299,7 +299,7 @@ Delete the now-dead `_is_nullable` / `_non_null_branch` module helpers only if n
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py -q`
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py -q`
 Expected: `5 passed`. (The OLD `test_pydantic_to_grammar.py` now fails — expected; it tests the removed compact format and is deleted in Task 9. Do not run it until then.)
 
 - [ ] **Step 5: Commit (source only — tests are gitignored)**
@@ -315,7 +315,7 @@ git commit -m "feat(pydantic): tuple API + strict-JSON object skeleton + string 
 
 **Files:**
 - Modify: `grammarllm/utils/pydantic_to_grammar.py` (`_Translator._value_symbol` dispatch + four new `_json_*_nt` methods)
-- Test: `grammarllm/antigravity_tests/test_pydantic_json.py`
+- Test: `grammarllm/tests/test_pydantic_json.py`
 
 **Interfaces:**
 - Consumes: `_value_symbol(parent_nt, slot_name, schema)` dispatch from Task 1; `self._char_terminal` / `self._digit_terminal`.
@@ -376,7 +376,7 @@ class TestPrimitives:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py -q -k Primitives`
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py -q -k Primitives`
 Expected: FAIL with `PydanticGrammarError: Cannot translate value schema` (dispatch doesn't know `type: string` yet).
 
 - [ ] **Step 3: Implement**
@@ -428,7 +428,7 @@ Add the shared-NT methods to `_Translator`:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py -q`
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py -q`
 Expected: `10 passed`.
 
 - [ ] **Step 5: Commit**
@@ -444,7 +444,7 @@ git commit -m "feat(pydantic): shared JSON primitive NTs (string/int/float/bool)
 
 **Files:**
 - Modify: `grammarllm/utils/pydantic_to_grammar.py` (`_value_symbol` anyOf branch, `_Translator._emit_any_of`, `_Validator._validate_any_of`)
-- Test: `grammarllm/antigravity_tests/test_pydantic_json.py`
+- Test: `grammarllm/tests/test_pydantic_json.py`
 
 **Interfaces:**
 - Consumes: `_value_symbol` dispatch, `_json_*_nt` helpers, `_inline`.
@@ -492,7 +492,7 @@ class TestOptionalAndUnions:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py -q -k Optional`
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py -q -k Optional`
 Expected: FAIL — `Cannot translate value schema` for anyOf; the D7 test fails because no error is raised.
 
 - [ ] **Step 3: Implement**
@@ -542,7 +542,7 @@ Note: `_emit_enum` is reached for Optional enums via `_value_symbol(nt, "branch0
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py -q`
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py -q`
 Expected: `14 passed`.
 
 - [ ] **Step 5: Commit**
@@ -558,7 +558,7 @@ git commit -m "feat(pydantic): nullable values via anyOf + reject int|float unio
 
 **Files:**
 - Modify: `grammarllm/utils/pydantic_to_grammar.py` (`_value_symbol` object/$ref branches)
-- Test: `grammarllm/antigravity_tests/test_pydantic_json.py`
+- Test: `grammarllm/tests/test_pydantic_json.py`
 
 **Interfaces:**
 - Consumes: `_emit_object_nt`, `_ref_symbol` (Task 1), `_emit_any_of` (Task 3).
@@ -601,7 +601,7 @@ class TestNestedAndRef:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py -q -k NestedAndRef`
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py -q -k NestedAndRef`
 Expected: FAIL with `Cannot translate value schema` (dispatch lacks `$ref`/object).
 
 - [ ] **Step 3: Implement**
@@ -626,7 +626,7 @@ and insert with the other `type` branches:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py -q`
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py -q`
 Expected: `16 passed`.
 
 - [ ] **Step 5: Commit**
@@ -642,7 +642,7 @@ git commit -m "feat(pydantic): nested objects and shared named NTs for \$refs"
 
 **Files:**
 - Modify: `grammarllm/utils/pydantic_to_grammar.py` (`_value_symbol` array branch + `_emit_array`)
-- Test: `grammarllm/antigravity_tests/test_pydantic_json.py`
+- Test: `grammarllm/tests/test_pydantic_json.py`
 
 **Interfaces:**
 - Consumes: `_value_symbol` dispatch.
@@ -676,7 +676,7 @@ class TestArrays:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py -q -k Arrays`
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py -q -k Arrays`
 Expected: FAIL with `Cannot translate value schema` for `type: array`.
 
 - [ ] **Step 3: Implement**
@@ -706,7 +706,7 @@ Add to `_Translator`:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py -q`
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py -q`
 Expected: `18 passed`.
 
 - [ ] **Step 5: Commit**
@@ -722,7 +722,7 @@ git commit -m "feat(pydantic): array values as right-recursive [item, ...] gramm
 
 **Files:**
 - Modify: `grammarllm/utils/pydantic_to_grammar.py` (`_Validator.__init__/_validate_ref/_validate_any_of/validate` array branch)
-- Test: `grammarllm/antigravity_tests/test_pydantic_json.py`
+- Test: `grammarllm/tests/test_pydantic_json.py`
 
 **Interfaces:**
 - Consumes: `_ref_symbol` + `_emitted` guard (translation of recursion already works — `_emit_object_nt` registers the NT before descending into fields, so a self-reference returns the name without re-emitting).
@@ -777,7 +777,7 @@ class TestRecursion:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py -q -k Recursion`
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py -q -k Recursion`
 Expected: the two "allowed" tests FAIL with the old `Cyclic $ref detected` error; the two "rejected" tests may pass already (error message check `match="Optional"` should pass — the old message contains "Optional"). At least the first two must fail.
 
 - [ ] **Step 3: Implement**
@@ -897,7 +897,7 @@ Also update the type-collection loop in `_validate_any_of`: a `$ref` branch has 
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py -q`
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py -q`
 Expected: `22 passed`.
 
 - [ ] **Step 5: Commit**
@@ -912,7 +912,7 @@ git commit -m "feat(pydantic): allow \$ref cycles broken by Optional/array edges
 ### Task 7: Integration layer — real tokenizer builds the parsing table
 
 **Files:**
-- Test: `grammarllm/antigravity_tests/test_pydantic_json.py` (append)
+- Test: `grammarllm/tests/test_pydantic_json.py` (append)
 
 **Interfaces:**
 - Consumes: `pydantic_to_productions` (complete after Task 6); `grammarllm.get_parsing_table_and_map_tt`.
@@ -974,7 +974,7 @@ def test_parsing_table_builds(model, tokenizer):
     assert map_tt["digit"], "digit matched no vocab tokens"
 ```
 
-Register the markers — create `grammarllm/antigravity_tests/pytest.ini` (local-only, gitignored with the rest of the dir):
+Register the markers — create `grammarllm/tests/pytest.ini` (local-only, gitignored with the rest of the dir):
 
 ```ini
 [pytest]
@@ -985,12 +985,12 @@ markers =
 
 - [ ] **Step 2: Run the tests**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py -q -m integration`
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py -q -m integration`
 Expected: `4 passed`. If any model raises `Conflict:` or `Token conflict:`, the translator has an LL(1) bug — fix it before proceeding (do not weaken the test).
 
 - [ ] **Step 3: Run the full local suite**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py grammarllm/antigravity_tests/test_dev_review_fixes.py -q`
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py grammarllm/tests/test_dev_review_fixes.py -q`
 Expected: all pass.
 
 - [ ] **Step 4: Commit**
@@ -1009,7 +1009,7 @@ git diff --quiet grammarllm/utils/pydantic_to_grammar.py || {
 ### Task 8: Random-walk round-trip + E2E smoke
 
 **Files:**
-- Test: `grammarllm/antigravity_tests/test_pydantic_json.py` (append)
+- Test: `grammarllm/tests/test_pydantic_json.py` (append)
 
 **Interfaces:**
 - Consumes: `built_grammar` / `REPRESENTATIVE_MODELS` (Task 7); `grammarllm.generate_grammar_parameters`, `grammarllm.generate_text`; `PushdownAutomaton.get_tokens/next_state/eos` (`grammarllm/modules/automaton.py`).
@@ -1059,7 +1059,7 @@ def test_random_walk_round_trip(model, tokenizer, seed):
 
 - [ ] **Step 2: Run it**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py -q -m integration -k random_walk`
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py -q -m integration -k random_walk`
 Expected: `40 passed` (4 models × 10 seeds). Failure modes and their meaning:
 - `json.loads` fails → a skeleton chunk or value emitter produces malformed JSON; inspect `text`.
 - `model_validate` fails → grammar admits a value outside the model (e.g. wrong enum).
@@ -1107,7 +1107,7 @@ def test_generation_round_trips():
 
 - [ ] **Step 4: Run it**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py -q -m e2e`
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py -q -m e2e`
 Expected: `1 passed` (takes ~1–2 min on CPU).
 
 - [ ] **Step 5: Commit (only if translator fixes were needed)**
@@ -1124,9 +1124,9 @@ git diff --quiet grammarllm/utils/pydantic_to_grammar.py || {
 ### Task 9: Retire old tests, update module docstring and docs
 
 **Files:**
-- Delete: `grammarllm/antigravity_tests/test_pydantic_to_grammar.py` (local-only file; its still-valid rejection tests are re-homed below)
+- Delete: `grammarllm/tests/test_pydantic_to_grammar.py` (local-only file; its still-valid rejection tests are re-homed below)
 - Modify: `grammarllm/utils/pydantic_to_grammar.py` (module docstring), `docs/usage.md` (pydantic section), `README.md` (pydantic section + limitations line)
-- Test: `grammarllm/antigravity_tests/test_pydantic_json.py` (append re-homed rejection tests)
+- Test: `grammarllm/tests/test_pydantic_json.py` (append re-homed rejection tests)
 
 **Interfaces:**
 - Consumes: everything above.
@@ -1180,12 +1180,12 @@ class TestRejectedConstructs:
 Then delete the old file:
 
 ```bash
-rm grammarllm/antigravity_tests/test_pydantic_to_grammar.py
+rm grammarllm/tests/test_pydantic_to_grammar.py
 ```
 
 - [ ] **Step 2: Run the full local suite**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/ -q -m "not e2e"`
+Run: `uv run --with pytest pytest grammarllm/tests/ -q -m "not e2e"`
 Expected: all pass (unit + integration layers + existing `test_dev_review_fixes.py`, `test_logit_processor_beam.py`, `test_multi_tag.py`).
 
 - [ ] **Step 3: Update the module docstring**
@@ -1286,8 +1286,8 @@ Also remove the now-stale "(experimental)" wording in the README features list b
 
 - [ ] **Step 5: Final verification**
 
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/ -q -m "not e2e"` → all pass.
-Run: `uv run --with pytest pytest grammarllm/antigravity_tests/test_pydantic_json.py -q -m e2e` → 1 passed.
+Run: `uv run --with pytest pytest grammarllm/tests/ -q -m "not e2e"` → all pass.
+Run: `uv run --with pytest pytest grammarllm/tests/test_pydantic_json.py -q -m e2e` → 1 passed.
 
 - [ ] **Step 6: Commit**
 

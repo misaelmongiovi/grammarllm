@@ -6,7 +6,7 @@ A careful, file-by-file review of every module. Issues are marked **🔴 Critica
 
 ## ⚑ Resolution status (dev-branch review, 2026-07-07)
 
-Verified against the current dev code + fixed in this pass. Regression tests: `antigravity_tests/test_dev_review_fixes.py` (16 new tests, 36 total green) + E2E run over greedy / beam / sampling / batch.
+Verified against the current dev code + fixed in this pass. Regression tests: `tests/test_dev_review_fixes.py` (16 new tests, 36 total green) + E2E run over greedy / beam / sampling / batch.
 
 **Already fixed before this pass (verified in code):**
 - BUG-5 (cache eviction): LRU via pop+reinsert implemented in `__call__`.

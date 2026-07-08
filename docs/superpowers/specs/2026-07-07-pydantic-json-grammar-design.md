@@ -111,5 +111,5 @@ class Node(BaseModel):
 ## Affected files
 
 - `grammarllm/utils/pydantic_to_grammar.py` — translator rewrite (validator largely intact, +D6/D7).
-- `grammarllm/antigravity_tests/test_pydantic_to_grammar.py` — update expectations, add layers 2–3.
+- `grammarllm/tests/test_pydantic_to_grammar.py` — update expectations, add layers 2–3.
 - No changes to core pipeline modules.
