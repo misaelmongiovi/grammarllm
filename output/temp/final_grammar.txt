@@ -1,10 +1,15 @@
 --- Regole principali ---
 
+-- Regole tag per S*_NAME_POS0 --
+S*_NAME_POS0_TAG_NT1 -> l uis a " | m ario "
+
 -- Regole tag per S* --
-S* -> positive A | negative B
+S*_NAME -> " S*_NAME_POS0_TAG_NT1
+S* -> {" name ": Ġ S*_NAME , Ġ" address ": Ġ ADDRESS }
 
--- Regole tag per A --
-A -> Ġhappy | Ġpeaceful
+-- Regole tag per ADDRESS_CITY_POS0 --
+ADDRESS_CITY_POS0_TAG_NT1 -> mil an " | rome "
 
--- Regole tag per B --
-B -> Ġglo omy | Ġangry
+-- Regole tag per ADDRESS --
+ADDRESS_CITY -> " ADDRESS_CITY_POS0_TAG_NT1
+ADDRESS -> {" city ": Ġ ADDRESS_CITY }
