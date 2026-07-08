@@ -7,30 +7,35 @@ Pipeline:
     Pydantic model
         └─► JSON Schema  (model.model_json_schema())
               └─► Phase 1: structural validation  (raises PydanticGrammarError on non-LL(1) constructs)
-                    └─► Phase 2: translation       (returns productions dict with <<>> notation)
-                          └─► get_parsing_table_and_map_tt(tokenizer, productions)  [existing pipeline]
+                    └─► Phase 2: translation       (returns (productions, regex_dict) — <<>> skeleton chunks + regex terminals)
+                          └─► get_parsing_table_and_map_tt(tokenizer, productions, regex_dict)  [existing pipeline]
 
 Supported JSON Schema constructs
 ─────────────────────────────────
-✅  object with fixed fields
-✅  enum / Literal
-✅  anyOf / oneOf  with structurally disjoint branches (FIRST-disjointness verified at runtime by existing LL(1) table builder)
-✅  Optional[X]  →  anyOf: [X, {type: null}]
-✅  array (homogeneous)  →  tail-recursive NT
-✅  allOf  with non-overlapping fields  →  flattened into single object
-✅  $ref  →  resolved from $defs, right/mediated recursion only
-✅  boolean, integer, number, string  →  mapped to caller-supplied regex terminals
+✅  object with fixed fields          → {"field": value, ...} skeleton chunks
+✅  enum / Literal (string values)    → <<"value">> alternatives
+✅  Optional[X]                       → value alternates X | null (key always present)
+✅  anyOf / oneOf of distinct types   → FIRST-disjoint alternatives
+✅  array (homogeneous)               → [item, item, ...], empty allowed
+✅  allOf (non-overlapping fields)    → flattened object
+✅  $ref                              → named shared NT; cycles allowed when
+                                        broken by an Optional or array edge
+✅  str / int / float / bool          → shared JSON_* NTs over two regex
+                                        terminals (json_char, digit); integers
+                                        reject leading zeros, and json_char
+                                        also excludes byte-level-BPE
+                                        control-byte tokens (U+0100–U+011F)
 
-Rejected constructs (PydanticGrammarError raised in Phase 1)
-─────────────────────────────────────────────────────────────
-❌  $ref with direct left recursion
-❌  $ref with mutual cyclic recursion
-❌  allOf with duplicate fields of different types
-❌  if / then / else
-❌  patternProperties
-❌  additionalProperties: true  (open schema)
-❌  anyOf / oneOf whose branches cannot be proven structurally disjoint at schema level
-     (FIRST overlap is caught later by the LL(1) table builder, but we reject obvious cases early)
+Rejected constructs (PydanticGrammarError in Phase 1)
+─────────────────────────────────────────────────────
+❌  $ref cycles with no Optional/array edge (generation could never end)
+❌  int | float unions (both start with a digit — FIRST conflict)
+❌  anyOf / oneOf with two branches of the same JSON type
+❌  if / then / else, patternProperties, not, contains
+❌  additionalProperties: true
+❌  non-string enum values; enum values or field names containing " \\ or
+    control characters (v1 emits no escape sequences)
+❌  array without items
 """
 
 from __future__ import annotations
@@ -198,7 +203,8 @@ class _Validator:
         # ── array ───────────────────────────────────────────────────────────
         if schema_type == "array":
             items = schema.get("items")
-            if items is None:
+            # Untyped `list` yields either no "items" key or an empty {} schema.
+            if not items:
                 raise PydanticGrammarError(
                     f"[{path}] 'array' without 'items' is an open schema. "
                     "Annotate your list field with a concrete element type, "

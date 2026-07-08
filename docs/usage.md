@@ -9,7 +9,7 @@ GrammarLLM constrains the output of any Hugging Face causal LM to a formal gramm
 - [Generation modes](#generation-modes)
 - [Result format](#result-format)
 - [Analyzing constraint impact](#analyzing-constraint-impact)
-- [Pydantic models (experimental)](#pydantic-models-experimental)
+- [Pydantic models](#pydantic-models)
 - [Troubleshooting](#troubleshooting)
 
 ## Pipeline overview
@@ -203,26 +203,38 @@ fig.savefig("analysis.png")
 
 Key metric: `preserved_mass` per step — the fraction of the model's free probability mass that fell on grammar-valid tokens. Near 1.0 the model already agreed with the grammar; near 0.0 the constraint forced the output. `compare_analyses([a1, a2], metric="preserved_mass")` overlays multiple runs.
 
-## Pydantic models (experimental)
+## Pydantic models
 
-`grammarllm.utils.pydantic_to_grammar.pydantic_to_productions(Model)` converts a Pydantic v2 model into a productions dict:
+`pydantic_to_productions(Model)` converts a Pydantic v2 model into a grammar
+whose every output is **strict JSON**, round-trippable into the model:
 
-```python
-from typing import Literal, Optional
-from pydantic import BaseModel
-from grammarllm.utils.pydantic_to_grammar import pydantic_to_productions
+    from typing import Literal, Optional
+    from pydantic import BaseModel
+    from grammarllm.utils.pydantic_to_grammar import pydantic_to_productions
 
-class Person(BaseModel):
-    name: Literal["mario", "luisa"]
-    mood: Optional[Literal["happy", "sad"]] = None
+    class Person(BaseModel):
+        name: Literal["mario", "luisa"]
+        mood: Optional[Literal["happy", "sad"]] = None
 
-productions = pydantic_to_productions(Person)
-pars_table, map_tt = get_parsing_table_and_map_tt(tokenizer, productions)
-```
+    productions, regex_dict = pydantic_to_productions(Person)
+    pars_table, map_tt = get_parsing_table_and_map_tt(tokenizer, productions, regex_dict)
+    # generated text: {"name": "mario", "mood": null}
+    # json.loads(...) and Person.model_validate_json(...) always succeed
 
-**Current output is a compact key/value stream, not JSON** (e.g. `namemariomoodhappy`). A redesign targeting strict JSON output (round-trippable via `Model.model_validate_json`) is specified in [`docs/superpowers/specs/2026-07-07-pydantic-json-grammar-design.md`](superpowers/specs/2026-07-07-pydantic-json-grammar-design.md) — expect the API to change to `(productions, regex_dict)`.
+Rules and limits:
 
-Unsupported constructs raise `PydanticGrammarError` at conversion time (cyclic `$ref`s, `if/then/else`, open `additionalProperties`, same-type unions, non-string enums, untyped lists).
+- Keys are always emitted; `Optional` fields produce `null` values, they are
+  never omitted.
+- Recursive models are supported when the cycle passes through an `Optional`
+  or `list` field (`Node.next: Optional[Node]`); unbreakable cycles are
+  rejected at conversion time.
+- No JSON escape sequences: string content, enum values, and field names must
+  not contain `"`, `\`, or control characters.
+- `int | float` unions are rejected (indistinguishable with one token of
+  lookahead) — use a single `float` field.
+
+Unsupported constructs raise `PydanticGrammarError` at conversion time with a
+message naming the field and the fix.
 
 ## Troubleshooting
 

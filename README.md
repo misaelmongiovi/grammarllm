@@ -13,7 +13,7 @@ It allows you to define and apply constraints via formal grammars, ideal for cla
 * 🔦 **Beam Search Support** — stateless PDA re-simulation makes beam reordering safe
 * 🎲 **Sampling, batching, multiple return sequences** — all `model.generate()` modes
 * 📊 **Constraint-impact analysis** — per-step preserved probability mass, entropy, plots
-* 🧬 **Pydantic → grammar conversion** *(experimental)* — derive a grammar from a `BaseModel`
+* 🧬 **Pydantic → grammar conversion** — derive a strict-JSON grammar from a `BaseModel`
 
 📚 **Full documentation: [docs/usage.md](docs/usage.md)** — runnable scripts in [examples/](examples/)
 
@@ -203,12 +203,13 @@ class Person(BaseModel):
     name: Literal["mario", "luisa"]
     mood: Optional[Literal["happy", "sad"]] = None
 
-productions = pydantic_to_productions(Person)
-pars_table, map_tt = get_parsing_table_and_map_tt(tokenizer, productions)
+productions, regex_dict = pydantic_to_productions(Person)
+pars_table, map_tt = get_parsing_table_and_map_tt(tokenizer, productions, regex_dict)
+# generated text is always valid JSON: {"name": "mario", "mood": null}
 ```
 
-Current output is a compact key/value stream (not JSON). A strict-JSON redesign is specified in
-[docs/superpowers/specs/2026-07-07-pydantic-json-grammar-design.md](docs/superpowers/specs/2026-07-07-pydantic-json-grammar-design.md).
+Output is strict JSON — `json.loads` and `Person.model_validate_json` always
+succeed. Design: [docs/superpowers/specs/2026-07-07-pydantic-json-grammar-design.md](docs/superpowers/specs/2026-07-07-pydantic-json-grammar-design.md).
 
 ---
 
@@ -273,7 +274,7 @@ Each key in regex_dict must follow the format 'regex_' + symbol_name, where symb
 * Grammars must be **LL(1) after tag expansion** — non-LL(1) grammars are rejected at setup time with a diagnostic `Conflict:` error
 * No left recursion (`'A': ["A x"]`) — use right recursion (`'A': ["x A", "ε"]`)
 * The streamer (live token logging) is disabled with beam search (HF limitation); generation itself fully supports beams
-* Pydantic conversion is experimental and currently emits a compact non-JSON format (see spec above)
+* Pydantic conversion emits strict JSON; no escape sequences in string content (no ", \ or control chars)
 
 ---
 
