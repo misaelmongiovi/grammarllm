@@ -57,3 +57,62 @@ def get_vocab_trie(tokenizer):
         _TRIE_CACHE[key] = trie
         logging.info(f"VocabTrie built for {key}")
     return trie
+
+
+def lookahead_tokens(pda, trie):
+    """
+    g_t_r: DFS over PDA fragment transitions pruned by the vocab trie.
+
+    Returns { token_id: (fragments, chars_into_last) } — every vocabulary
+    token realizable from the current (stack, residue) state, including
+    merged tokens spanning terminal boundaries and tokens ending
+    mid-terminal. Depth-0 exact matches reproduce the legacy mask, so the
+    legacy valid set is always a subset of this one.
+
+    Collision policy (spec): first path found wins (setdefault), scan order.
+    Regex terminals (pda.regex_terminals) are yielded whole at depth 0 and
+    never crossed (spec L2 — see the regex-lookahead future-work doc).
+    """
+    results = {}
+
+    def dfs(state, node, consumed):
+        if state.residue:
+            fragments = [state.residue]
+            from_residue = True
+        else:
+            fragments = state.recursive_get_tokens(list(state.stack))
+            from_residue = False
+
+        for frag in fragments:
+            if not from_residue and frag in state.regex_terminals:
+                if not consumed:
+                    # depth 0: regex class participates as whole tokens,
+                    # replayed as a plain terminal consumption
+                    path = ((frag,), len(frag))
+                    for token_id in state.map_terminals_tokens.get(frag, []):
+                        results.setdefault(token_id, path)
+                continue
+
+            n = node
+            alive = True
+            for i, ch in enumerate(frag):
+                n = n.child(ch)
+                if n is None:
+                    alive = False
+                    break
+                if n.token_id is not None:
+                    path = (tuple(consumed) + (frag,), i + 1)
+                    if results.setdefault(n.token_id, path) != path:
+                        logging.debug(
+                            f"lookahead collision on token {n.token_id}: kept first path"
+                        )
+            if alive:
+                child = state.clone()
+                if from_residue:
+                    child.residue = ""
+                else:
+                    child.next_state_terminal(frag)
+                dfs(child, n, consumed + [frag])
+
+    dfs(pda, trie, [])
+    return results
