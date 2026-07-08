@@ -168,6 +168,7 @@ Notes:
   boundary-strict legacy engine — useful as the A/B baseline when measuring
   constraint impact with `compare_analyses(..., metric="preserved_mass")`
   (measured on Qwen2.5-0.5B, lookahead raises mean preserved mass ~2.5×).
+  Visual walkthrough with diagrams: [token-boundary-lookahead.md](token-boundary-lookahead.md).
   Merged tokens stop at regex-terminal boundaries (see
   `docs/superpowers/specs/2026-07-08-regex-lookahead-future-work.md`).
 - Any extra kwarg is forwarded to `model.generate()`.
