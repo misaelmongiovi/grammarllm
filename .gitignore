@@ -20,3 +20,4 @@ test_scripts/
 /benchmark_tests
 result_t1
 utils/score_utils.py
+site/
