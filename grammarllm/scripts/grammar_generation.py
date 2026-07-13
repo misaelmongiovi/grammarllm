@@ -786,53 +786,97 @@ class ProductionRuleProcessor:
             # Estrai gli elementi ordinati con tipo ('tag' o 'other')
             ordered_elements_list = self.extract_tags_and_others(rhs_list)
 
-            # ── Passo 1: raggruppa i tag per posizione ────────────────────
-            # position_tags[p] = lista dei tag (uno per produzione) che
-            # compaiono nella p-esima posizione-tag di quella produzione.
-            # Le produzioni che non hanno un tag in posizione p non
-            # contribuiscono (produzione più corta).
-            position_tags: dict[int, list[str]] = {}
+            # ── Passo 1: raggruppa i tag per posizione E per continuazione ──
+            # position_groups[p][cont] = tag che compaiono nella p-esima
+            # posizione-tag, raggruppati per ciò che li SEGUE nella produzione.
+            #
+            # BUG FIX (corruzione silenziosa della gerarchia).
+            # Prima si raggruppava solo per posizione: tutti i tag di una
+            # posizione finivano in UN solo NT condiviso.  Quel NT si biforca
+            # al proprio interno (left-factoring dei prefissi di token), quindi
+            # se le produzioni che lo usano hanno continuazioni DIVERSE la
+            # corrispondenza tag→continuazione viene persa.  Esempio:
+            #
+            #   S* -> <<{"parent": "cs", "child": ">>  C_J
+            #   S* -> <<{"parent": "ece", "child": ">> D_J
+            #
+            # I due tag condividono il prefisso di token '{" parent ": Ġ"',
+            # quindi finivano nello stesso S*_POS0_TAG_NT1, e il passo 4
+            # fattorizzava le continuazioni in un S*_FACT → C_J | D_J che non
+            # sa più quale ramo è stato preso.  Effetti:
+            #   - FIRST(C_J) ∩ FIRST(D_J) ≠ ∅  → ValueError: Conflict, cioè il
+            #     rifiuto di una grammatica che È LL(1);
+            #   - FIRST disgiunti → NESSUN errore e la gerarchia semplicemente
+            #     non viene imposta: veniva accettato
+            #     {"parent": "cs", "child": "electricity"}  con electricity
+            #     figlio di ece.  Corruzione silenziosa.
+            #
+            # Due produzioni possono condividere la catena di NT a una
+            # posizione solo se tutto ciò che segue quel tag è IDENTICO.
+            # Altrimenti ogni continuazione ottiene la propria catena, e il
+            # prefisso di token comune viene poi fattorizzato al passo 4 —
+            # che così produce la forma corretta:
+            #
+            #   S*      -> '{"' 'parent' '":' 'Ġ"' S*_FACT
+            #   S*_FACT -> 'cs'  … C_J        (FIRST = {'cs'})
+            #   S*_FACT -> 'ece' … D_J        (FIRST = {'ece'})  → LL(1), corretta.
+            #
+            # Le grammatiche in cui i tag di una posizione hanno tutti la stessa
+            # continuazione (il caso comune: enum di figli) producono un solo
+            # gruppo e sono invariate rispetto a prima.
+            position_groups: dict[int, dict[tuple, list[str]]] = {}
             for ordered_elements in ordered_elements_list:
                 tag_pos = 0
-                for kind, value in ordered_elements:
+                for idx, (kind, value) in enumerate(ordered_elements):
                     if kind == "tag":
-                        position_tags.setdefault(tag_pos, [])
-                        position_tags[tag_pos].append(value)
+                        continuation = tuple(ordered_elements[idx + 1:])
+                        position_groups.setdefault(tag_pos, {})
+                        position_groups[tag_pos].setdefault(continuation, [])
+                        position_groups[tag_pos][continuation].append(value)
                         tag_pos += 1
 
-            logging.info(f"Tag per posizione per {lhs}: {position_tags}")
+            logging.info(f"Tag per posizione/continuazione per {lhs}: {position_groups}")
 
-            # ── Passo 2: costruisci un NT per ogni posizione ──────────────
-            # pos_nt[p] = nome del NT da inserire in quella posizione.
-            pos_nt: dict[int, str] = {}
-            for pos, tags_at_pos in sorted(position_tags.items()):
-                nt_for_pos = f"{lhs}_POS{pos}"
-                pos_nt[pos] = nt_for_pos
+            # ── Passo 2: costruisci un NT per ogni (posizione, continuazione) ─
+            # group_nt[(pos, cont)] = nome del NT da usare in quella posizione
+            # per le produzioni con quella continuazione.  Con un solo gruppo
+            # per posizione il nome resta {lhs}_POS{p}, identico a prima.
+            group_nt: dict[tuple[int, tuple], str] = {}
+            for pos, groups in sorted(position_groups.items()):
+                multi = len(groups) > 1
+                for gi, (continuation, tags_at_pos) in enumerate(groups.items()):
+                    nt_for_pos = f"{lhs}_POS{pos}" if not multi else f"{lhs}_POS{pos}_G{gi}"
+                    group_nt[(pos, continuation)] = nt_for_pos
 
-                # Deduplication preservando ordine (per deterministicità)
-                unique_tags = list(dict.fromkeys(tags_at_pos))
-                tag_grammar = self.build_tag_grammar_for_rule(unique_tags, nt_for_pos)
+                    # Deduplication preservando ordine (per deterministicità)
+                    unique_tags = list(dict.fromkeys(tags_at_pos))
+                    tag_grammar = self.build_tag_grammar_for_rule(unique_tags, nt_for_pos)
 
-                for key, value in tag_grammar.items():
-                    final_grammar[key] = value
+                    for key, value in tag_grammar.items():
+                        final_grammar[key] = value
 
-                # Propaga il mapping al namespace lhs::tag::pos<n> in modo
-                # che il passo 3 lo trovi con chiave posizionale.
-                for tag in unique_tags:
-                    src_key = f"{nt_for_pos}::{tag}"
-                    dst_key = f"{lhs}::{tag}::pos{pos}"
-                    if src_key in self.tag_to_nt_mapping:
-                        self.tag_to_nt_mapping[dst_key] = self.tag_to_nt_mapping[src_key]
+                    # Propaga il mapping al namespace lhs::tag::pos<n> in modo
+                    # che il passo 3 lo trovi con chiave posizionale.
+                    for tag in unique_tags:
+                        src_key = f"{nt_for_pos}::{tag}"
+                        dst_key = f"{lhs}::{tag}::pos{pos}"
+                        if src_key in self.tag_to_nt_mapping:
+                            self.tag_to_nt_mapping[dst_key] = self.tag_to_nt_mapping[src_key]
 
             # ── Passo 3: costruisci le produzioni finali ──────────────────
             productions = []
             for ordered_elements in ordered_elements_list:
                 production_sublist = []
                 tag_pos = 0
-                for kind, value in ordered_elements:
+                for idx, (kind, value) in enumerate(ordered_elements):
                     if kind == "tag":
-                        lhs_key = f"{lhs}::{value}::pos{tag_pos}"
-                        expansion = self.tag_to_nt_mapping.get(lhs_key)
+                        # Il NT dipende da (posizione, continuazione): due
+                        # produzioni con continuazioni diverse NON condividono
+                        # la catena, altrimenti si perde la corrispondenza
+                        # tag→continuazione (vedi passo 1).
+                        continuation = tuple(ordered_elements[idx + 1:])
+                        nt_for_pos = group_nt[(tag_pos, continuation)]
+                        expansion = self.tag_to_nt_mapping.get(f"{nt_for_pos}::{value}")
                         if expansion:
                             production_sublist.extend(expansion.split())
                         else:

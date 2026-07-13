@@ -36,6 +36,41 @@ flowchart TB
 
 Setup is the expensive part and depends only on the grammar and tokenizer — the [usage guide](usage.md#pipeline-overview) recommends computing it once and reusing it across generations.
 
+### Tags that share a token prefix
+
+When several alternatives place a tag at the same position, `ProductionRuleProcessor`
+groups those tags into one non-terminal chain and left-factors their shared subword
+prefix. That chain **branches internally**, so it may only be shared by productions
+whose continuation — everything after the tag — is identical. Grouping is therefore
+keyed by `(position, continuation)`, not by position alone.
+
+This matters for hierarchical grammars, where a shared literal prefix is followed by a
+discriminator that selects which non-terminal comes next:
+
+```python
+'S*':  ['<<{"parent": "cs", "child": ">> C_J',      # -> cs children
+        '<<{"parent": "ece", "child": ">> D_J'],    # -> ece children
+'C_J': ['<<computer graphics">>', ...],
+'D_J': ['<<electricity">>', ...],
+```
+
+Both tags share the token prefix `{" parent ": Ġ"`. It is factored out, and the parent
+literal discriminates the branch:
+
+```
+S*      -> '{"' 'parent' '":' 'Ġ"' S*_FACT
+S*_FACT -> 'cs'  '",' … C_J          # FIRST = {'cs'}
+S*_FACT -> 'ece' '",' … D_J          # FIRST = {'ece'}   -> LL(1)
+```
+
+Grouping by position alone put both tags in one chain and appended the continuations to
+a shared `S*_FACT -> C_J | D_J`, which no longer knew which branch had been taken. If the
+child `FIRST` sets collided the table build raised a spurious `Conflict:`; if they were
+disjoint it raised nothing and **silently stopped enforcing the hierarchy**, accepting
+`{"parent": "cs", "child": "electricity"}`. Grammars whose tags at a position all share
+one continuation (the common case — a flat enum of children) produce a single group and
+are unaffected.
+
 ## Runtime phase
 
 | Module | Role |
