@@ -178,27 +178,31 @@ def generate_grammar_parameters(tokenizer, pars_tab, map_terminal_tokens,
     # For compatibility, we return base PDAs which can be used by the new processor
     return pdas, BaseStreamer(tokenizer, pdas)
 
-def setup_logging():
+def setup_logging(log_dir='grammarllm/temp'):
     """
     Configura il sistema di logging di GrammarLLM su due file.
 
     File prodotti
     -------------
-    grammarllm/temp/GRAM-GEN.log
+    <log_dir>/GRAM-GEN.log
         Log principale (INFO). Flusso di elaborazione grammatica, FIRST/FOLLOW,
         produzioni, metriche di generazione. Sovrascritto ad ogni chiamata.
 
-    grammarllm/temp/GRAM-DETAIL.log
+    <log_dir>/GRAM-DETAIL.log
         Log di dettaglio per le distribuzioni logit. Contiene le Rich Table
         top-10 di StatelessLogitsProcessor.log_comparison() (solo se DEBUG).
         Non propagato al root logger per evitare duplicazione.
+
+    Parameters
+    ----------
+    log_dir : str
+        Directory di destinazione dei log. Default 'grammarllm/temp'.
 
     Note
     ----
     I file vengono sovrascritti (mode='w+') ad ogni chiamata.
     Chiamare una sola volta all'inizio della sessione.
     """
-    log_dir = 'grammarllm/temp'
     os.makedirs(log_dir, exist_ok=True)  # Ensure the log directory exists
     
     logging.basicConfig(
@@ -297,25 +301,52 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
             tokenizer.padding_side = "left"
 
         # TO USE WHEN CREATE PROMPT IS USED AND PROMPT IS A LIST
-        if isinstance(text,list):
-            if chat_template is not None:
-                # LIST WITH CHAT TEMPLATE -> CONVERSATION
-                tokenizer.chat_template = chat_template
-                tokenized_input = tokenizer.apply_chat_template(text, 
-                                                            tokenize=True,
-                                                            add_generation_prompt=True,
-                                                            return_dict=True,
-                                                            padding=True,
-                                                            return_tensors="pt").to(model.device)
+        if isinstance(text, list):
+            # Una conversazione si riconosce dal CONTENUTO, non dal fatto che il
+            # chiamante abbia passato un chat_template:
+            #   [{...}, {...}]        -> una conversazione (output di create_prompt)
+            #   [[{...}], [{...}]]    -> batch di conversazioni
+            #   ["a", "b"]            -> batch di prompt grezzi
+            is_conversation = (
+                all(isinstance(t, dict) for t in text)
+                or all(isinstance(t, list) and all(isinstance(m, dict) for m in t)
+                       for t in text)
+            )
+
+            if is_conversation:
+                # BUG FIX: prima si usava il template SOLO se il chiamante ne
+                # passava uno, e `grammarllm.chat_template` — l'unico documentato —
+                # rende <|system|>/<|user|>/<|assistant|>, che NON sono token
+                # speciali di Llama-3/Qwen: si frantumano in '<','|','system','|','>'.
+                # Il modello riceveva un formato di chat su cui non è mai stato
+                # addestrato.  Misurato su WoS con Llama-3.2-1B: L1 0.539 -> 0.145,
+                # con il modello che smette di classificare e inizia a ripetere il
+                # system prompt.  Ora il default è il template NATIVO del tokenizer,
+                # che non viene mai sovrascritto se il chiamante non lo chiede.
+                if chat_template is not None:
+                    tokenizer.chat_template = chat_template
+                elif tokenizer.chat_template is None:
+                    raise ValueError(
+                        "Il tokenizer non ha un chat_template nativo (modello base, "
+                        "non instruct?). Passa esplicitamente `chat_template=...` a "
+                        "generate_text, oppure usa una lista di stringhe."
+                    )
+                tokenized_input = tokenizer.apply_chat_template(
+                    text,
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    return_dict=True,
+                    padding=True,
+                    return_tensors="pt").to(model.device)
+            elif all(isinstance(t, str) for t in text):
+                # BATCH DI PROMPT GREZZI — padding necessario
+                tokenized_input = tokenizer(text, return_tensors="pt", padding=True)
             else:
-                # LIST WITHOUT CHAT TEMPLATE -> BATCH OF PROMPTS
-                # Se l'utente passa una lista di stringhe ["prompt1", "prompt2"], lo trattiamo come batch
-                # Assicuriamoci che siano stringhe
-                if all(isinstance(t, str) for t in text):
-                     # Padding è necessario per batch input
-                     tokenized_input = tokenizer(text, return_tensors="pt", padding=True)
-                else:
-                    raise ValueError("Se `text` è una lista e `chat_template` è None, deve essere una lista di stringhe (batch prompts).")
+                raise ValueError(
+                    "`text` deve essere: una conversazione (list[dict]), un batch di "
+                    "conversazioni (list[list[dict]]), o un batch di prompt "
+                    "(list[str]). Ricevuto un misto."
+                )
         else:
             tokenized_input = tokenizer(text, return_tensors="pt")
 

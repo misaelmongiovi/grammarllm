@@ -79,10 +79,11 @@ print(result["text"])          # e.g. "positive happy"
 print(result["probability"])   # joint probability of the sequence
 ```
 
-For chat models, build the prompt with `create_prompt` and pass `chat_template`:
+For chat models, build the prompt with `create_prompt` and pass it straight to
+`generate_text` — the conversation is rendered with **the model's own chat template**:
 
 ```python
-from grammarllm import create_prompt, chat_template
+from grammarllm import create_prompt
 
 prompt = create_prompt(
     prompt_input="It's raining and I feel a bit down.",
@@ -92,8 +93,22 @@ prompt = create_prompt(
         {"role": "assistant", "content": "positive happy"},
     ],
 )
-result = generate_text(model, tokenizer, prompt, pdas, streamer, chat_template)
+result = generate_text(model, tokenizer, prompt, pdas, streamer)
 ```
+
+!!! warning "Don't pass `grammarllm.chat_template` to an instruct model"
+
+    The exported `chat_template` is a **generic fallback** for base/legacy models that
+    have no template of their own (`tokenizer.chat_template is None`). It renders
+    `<|system|>` / `<|user|>` / `<|assistant|>`, which are *not* special tokens for
+    Llama-3, Qwen or Mistral: the tokenizer shatters them into `<`, `|`, `system`,
+    `|`, `>`, and the model sees a chat format it was never trained on.
+
+    The damage is large and silent — small models stop following the instruction and
+    start echoing the system prompt back. Measured on WoS with Llama-3.2-1B-Instruct:
+    **L1 micro-F1 0.539 → 0.145**.
+
+    Passing nothing is the right default.
 
 ## Writing grammars
 

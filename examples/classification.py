@@ -14,7 +14,6 @@ from grammarllm import (
     generate_text,
     setup_logging,
     create_prompt,
-    chat_template,
 )
 
 MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
@@ -60,7 +59,8 @@ def main():
 
     # Phase 3 — every call
     result = generate_text(
-        model, tokenizer, prompt, pdas, streamer, chat_template,
+        # no chat template: the conversation is rendered with the model's own
+        model, tokenizer, prompt, pdas, streamer,
         max_new_tokens=8,
     )
 

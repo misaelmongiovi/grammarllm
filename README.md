@@ -188,7 +188,7 @@ A larger grammar mixing exact strings, non-terminals, and regex terminals:
         tokenizer, productions=productions, regex_dict=regex_dict,
     )
     pdas, streamer = generate_grammar_parameters(tokenizer, pars_table, map_tt)
-    result = generate_text(model, tokenizer, prompt, pdas, streamer, chat_template)
+    result = generate_text(model, tokenizer, prompt, pdas, streamer)
     print(result["text"])
     # <http://example.org/people/GiovanniBianchi><http://example.org/properties/hasAge>"30"^^<http://www.w3.org/2001/XMLSchema#integer>.
 ```
