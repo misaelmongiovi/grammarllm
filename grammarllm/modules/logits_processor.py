@@ -60,6 +60,35 @@ except ImportError:
 # max_new_tokens=512 this would otherwise accumulate ~2560 live PDA objects.
 _MAX_CACHE_SIZE = 2048
 
+
+class TokenNotDerivable(ValueError):
+    """
+    Un token della history non appartiene all'insieme valido del suo stato PDA.
+
+    NON è un bug di masking: è un artefatto strutturale di HuggingFace.
+    _beam_search seleziona beams_to_keep = max(2, 1 + n_eos) * num_beams
+    candidati per step, con torch.topk (do_sample=False) o torch.multinomial
+    (do_sample=True).  Entrambi restituiscono SEMPRE beams_to_keep indici sul
+    piatto (num_beams x vocab), anche quando la grammatica ammette meno
+    continuazioni di così: i posti eccedenti vengono riempiti con token che il
+    processor ha messo a -inf.  Se poi meno di num_beams candidati hanno score
+    finito, quei beam a -inf vengono promossi a running beam — e allo step
+    successivo la loro history contiene un token che la grammatica non ha mai
+    permesso.
+
+    Succede nella coda della generazione: stati massimamente vincolati (un solo
+    token ammesso, es. stack=[] con residue non vuoto) oppure beam appena
+    conclusi, il cui score -1e9 va in underflow a probabilità 0 dentro la
+    softmax, rendendo invisibile a multinomial anche il loro token ammesso.
+
+    Un beam simile porta score -inf: non può mai battere un'ipotesi valida né
+    essere restituito, e il suo token spurio è già stato scritto nella sequenza
+    prima che il processor lo veda.  Va quindi ritirato (vedi _retire), non
+    "corretto".  Ogni ALTRO ValueError sollevato dal PDA resta una vera
+    incoerenza interna e continua a propagarsi.
+    """
+
+
 class StatelessLogitsProcessor(LogitsProcessor):
     """
     LogitsProcessor HuggingFace che vincola la generazione a una grammatica LL(1)
@@ -170,7 +199,12 @@ class StatelessLogitsProcessor(LogitsProcessor):
 
         # Logging limiter
         self.log_counter = 0
-        
+
+        # Beam ritirati perché HF li ha riempiti con token mascherati a -inf
+        # (vedi TokenNotDerivable).  Contatore per diagnostica: > 0 è normale
+        # con num_beams > 1 su grammatiche strette, non indica un errore.
+        self.retired_beams = 0
+
         # Detail Logger
         self.detail_logger = logging.getLogger("grammarllm.detail")
 
@@ -196,6 +230,7 @@ class StatelessLogitsProcessor(LogitsProcessor):
         self.pda_cache = {}
         self.mask_cache = {}
         self.log_counter = 0
+        self.retired_beams = 0
 
     def log_comparison(self, orig_probs, filt_probs, beam_idx, step):
         """
@@ -379,30 +414,27 @@ class StatelessLogitsProcessor(LogitsProcessor):
                     self.pda_cache[ancestor_key] = _ancestor
                     ancestor_pda = _ancestor
                     pda = ancestor_pda.clone()
-                    # Let ValueError propagate for truly invalid tokens — a
-                    # token the grammar does not allow must never have been
-                    # generated.  _advance_token handles the legitimate
-                    # exceptions (special tokens, forced EOS).
-                    self._advance_token(pda, history_tokens[-1])
+                    # Un token non derivabile qui NON è un bug di masking: è un
+                    # beam di riempimento di HF (vedi TokenNotDerivable), che
+                    # porta score -inf.  Lo ritiriamo — forzandogli EOS — invece
+                    # di far fallire tutta la generazione.  Il vincolo
+                    # grammaticale non viene aggirato: il beam muore, non prosegue.
+                    self._advance_token_or_retire(pda, history_tokens[-1])
                     found_ancestor = True
 
                 if not found_ancestor:
                     # Case B: Full Re-simulation from Base.
                     # This path is taken only when no cached prefix exists
                     # (first token, or cache was evicted).
-                    # Every token in history_tokens was already masked by
-                    # this processor at the step it was generated, so every
-                    # token MUST be valid for the grammar.
-                    # If next_state raises, it means either:
-                    #   (a) the masking logic has a bug, or
-                    #   (b) a special token slipped through — skip it.
-                    # We no longer swallow grammar errors silently.
+                    # Ogni token qui è già passato dalla maschera del processor
+                    # allo step in cui è stato generato, con UNA eccezione: i
+                    # beam di riempimento di HF (vedi TokenNotDerivable), che
+                    # vengono ritirati.  Nessun altro errore viene nascosto.
                     pda = base_pda.clone()
                     for token in history_tokens:
-                        # Propagate ValueError for truly invalid tokens.
-                        # A grammar violation here indicates a masking failure
-                        # at an earlier step — surface it so it can be fixed.
-                        if not self._advance_token(pda, token):
+                        # Si ferma su grammatica esaurita, EOS forzato, o beam
+                        # ritirato.
+                        if not self._advance_token_or_retire(pda, token):
                             break
                 
                 # Store in cache — evict least-recently-used entries when full.
@@ -522,19 +554,74 @@ class StatelessLogitsProcessor(LogitsProcessor):
         return list(entry.keys()), entry
 
     def _advance(self, pda, token, paths=None):
-        """Consume *token* on *pda*, routed by engine. ValueError on invalid."""
+        """
+        Consume *token* on *pda*, routed by engine.
+
+        Solleva TokenNotDerivable se il token non è nell'insieme valido dello
+        stato corrente — cioè se il processor lo aveva mascherato a -inf e HF
+        lo ha selezionato lo stesso (beam di riempimento, vedi TokenNotDerivable).
+        Il chiamante ritira quel beam.  Qualsiasi altro ValueError proveniente
+        dal PDA segnala una vera incoerenza interna e si propaga intatto.
+        """
         if not getattr(pda, "lookahead", False):
+            # Engine legacy: pre-controlliamo l'appartenenza, così un token
+            # mascherato produce TokenNotDerivable e non il ValueError generico
+            # di next_state() — che non sarebbe distinguibile da un bug vero.
+            if token not in pda.get_tokens():
+                raise TokenNotDerivable(
+                    f"Token {token} is not derivable from state "
+                    f"(stack={pda.stack})"
+                )
             pda.next_state(token)
             return
         if paths is None:
             _, paths = self._valid_ids(pda)
         path = paths.get(token)
         if path is None:
-            raise ValueError(
+            raise TokenNotDerivable(
                 f"Token {token} is not derivable from state "
                 f"(stack={pda.stack}, residue={pda.residue!r}) under lookahead"
             )
         pda.apply_lookahead_path(*path)
+
+    def _retire(self, pda, token):
+        """
+        Ritira un beam che HF ha riempito con un token mascherato a -inf.
+
+        Collassa il PDA nello stato esaurito (stack vuoto, residue vuoto), per cui:
+          - pda.eos() diventa True  -> __call__ forza EOS su quella riga;
+          - _advance_token() esce subito (return False) su ogni token successivo,
+            quindi i discendenti di questo beam si ri-simulano senza risollevare.
+        Il beam resta a score -inf: non può vincere né essere restituito.  Il suo
+        token spurio è già dentro running_sequences e non è recuperabile — l'unica
+        azione corretta è terminarlo.
+        """
+        pda.stack = []
+        pda.residue = ""
+        pda.current_terminals = []
+
+        self.retired_beams += 1
+        msg = (f"Beam ritirato: token {token} non derivabile "
+               f"(HF ha promosso un candidato mascherato a -inf).")
+        if self.retired_beams == 1:
+            # Prima occorrenza: visibile.  È atteso con num_beams > 1 su
+            # grammatiche strette, non è un errore di masking.
+            logging.warning(f"{msg} Ulteriori occorrenze a livello DEBUG.")
+        else:
+            logging.debug(msg)
+
+    def _advance_token_or_retire(self, pda, token):
+        """
+        _advance_token(), ma ritira il beam invece di propagare TokenNotDerivable.
+
+        Ritorna False quando il replay deve fermarsi (grammatica esaurita, EOS
+        forzato, oppure beam ritirato).
+        """
+        try:
+            return self._advance_token(pda, token)
+        except TokenNotDerivable:
+            self._retire(pda, token)
+            return False
 
     def get_pda_for_sequence(self, token_ids, prompt_idx=0):
         """
@@ -585,9 +672,15 @@ class StatelessLogitsProcessor(LogitsProcessor):
         # fixed in __call__.  This method is called to build pda_history in the
         # final result; a partial state would misrepresent which tokens were
         # actually consumed.  Let ValueError propagate so callers see the error.
+        #
+        # NB: qui NON si ritira il beam (a differenza di __call__).  Questa è una
+        # API di ispezione, chiamata sulle sequenze RESTITUITE — che sono quelle a
+        # score più alto.  Un beam ritirato vale -inf e non viene mai restituito
+        # finché esiste un'ipotesi valida, quindi un token non derivabile qui è
+        # un evento che il chiamante deve sentire, non da assorbire in silenzio.
         pda = self.base_pdas[prompt_idx].clone()
         for token in token_ids:
-            # ValueError propagates for invalid tokens — no silent bypass.
+            # TokenNotDerivable (sottoclasse di ValueError) si propaga.
             # _advance_token stops cleanly on grammar completion or forced EOS.
             if not self._advance_token(pda, token):
                 break

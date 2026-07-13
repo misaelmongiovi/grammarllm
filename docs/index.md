@@ -11,7 +11,7 @@ icon: lucide/rocket
 - **Grammar-constrained generation** — define your own production rules
 - **Compatible with Hugging Face Transformers**
 - **Linear-time decoding via deterministic PDA** — efficient grammar-constrained generation
-- **Beam search support** — stateless PDA re-simulation makes beam reordering safe
+- **Beam search support** — stateless PDA re-simulation makes beam reordering safe, and beams that HuggingFace pads with grammar-masked tokens are retired instead of derailing the run
 - **Canonical tokenization by default** — trie-guided lookahead lets the model emit its natural merged tokens across grammar boundaries ([how it works](token-boundary-lookahead.md))
 - **Sampling, batching, multiple return sequences** — all `model.generate()` modes
 - **Constraint-impact analysis** — per-step preserved probability mass, entropy, plots
