@@ -51,16 +51,18 @@ The merged token crosses two boundaries **and** ends in the middle of `ciao`. Th
 flowchart TB
     TKZ["tokenizer vocabulary<br/>(~150k strings)"] -->|"built once, cached"| TRIE["VocabTrie<br/>modules/lookahead.py"]
     GRAM["LL(1) parsing table"] --> PDA["PushdownAutomaton<br/>state = (stack, residue)"]
-    PDA -->|"valid terminal fragments<br/>(FIRST-of-stack scan)"| DFS["g_t_r DFS<br/>lookahead_tokens()"]
+    PDA -->|"valid terminal fragments<br/>(FIRST-of-stack scan)"| DFS["g_t_r DFS<br/>lookahead_paths()"]
     TRIE -->|"prunes impossible branches"| DFS
-    DFS -->|"{token_id: path}"| CACHE["mask cache<br/>key = (stack, residue)"]
-    CACHE --> PROC["StatelessLogitsProcessor<br/>_valid_ids() / _advance()"]
-    PROC -->|"logit mask"| GEN["model.generate()"]
+    DFS -->|"{token_id: [every compatible path]}"| CACHE["mask cache<br/>key = digest of the PdaSet"]
+    CACHE --> PROC["StatelessLogitsProcessor<br/>_valid_ids() / _advance()<br/>state = PdaSet"]
+    PROC -->|"logit mask = UNION over live states"| GEN["model.generate()"]
     GEN -->|"chosen token"| PROC
-    PROC -->|"apply_lookahead_path()"| PDA
+    PROC -->|"apply_lookahead_path() on every<br/>branch the token keeps alive"| PDA
 ```
 
 Two swappable primitives, everything else untouched: *"what is valid here"* (`_valid_ids`) and *"consume this token"* (`_advance`). `token_lookahead=False` routes both back to the legacy engine (the A/B baseline).
+
+The processor's state is a **`PdaSet`** — the set of PDA states still compatible with the tokens emitted so far — not a single PDA. Section 6 explains why; with the legacy engine the PDA is deterministic and the set is always a singleton.
 
 ---
 
@@ -112,6 +114,8 @@ stateDiagram-v2
 
 `eos()` = stack empty **and** residue empty. Clones and the processor's history cache carry the residue automatically.
 
+This is the state of *one* PDA. The processor tracks a **set** of them (`PdaSet`) — every state still compatible with the tokens emitted so far — because a single token can be compatible with more than one place in the grammar. See §6. `eos()` on the set means *at least one* live state has satisfied the grammar.
+
 ---
 
 ## 5. The g_t_r DFS
@@ -162,24 +166,52 @@ Key invariant: **old ⊆ new** — depth-0 exact matches reproduce the legacy ma
 
 ## 6. Advancing after the model picks a token
 
-The mask stores a replay `path` per token, so consuming a merged token is deterministic — no re-search:
+A token can be compatible with **several** places in the grammar. The mask therefore stores *every* replay path per token, and consuming the token keeps **all** the branches it is compatible with alive — the grammar never picks one.
 
 ```mermaid
 sequenceDiagram
     participant HF as model.generate()
     participant PR as Processor
     participant MC as mask cache
-    participant PD as PDA
-    HF->>PR: token history [..., '{ ci']
-    PR->>MC: digest = (stack, residue)
-    MC-->>PR: paths['{ ci'] = (('{','␣','ciao'), 2)
-    PR->>PD: apply_lookahead_path
-    Note over PD: next_state_terminal('{')<br/>next_state_terminal('␣')<br/>next_state_terminal('ciao')<br/>residue = 'ao'
-    PD-->>PR: state (stack=[], residue='ao')
-    PR-->>HF: next mask = tokens completing 'ao…'
+    participant PS as PdaSet
+    HF->>PR: token history [..., 'oste']
+    PR->>MC: digest = frozenset of live (stack, residue)
+    MC-->>PR: paths['oste'] = [(('ost','eo'),1), (('oste',),4)]
+    PR->>PS: apply_lookahead_path on BOTH
+    Note over PS: state A: residue='o'  → osteoarthritis<br/>state B: residue=''   → osteoporosis
+    PS-->>PR: 2 live states
+    PR-->>HF: next mask = UNION of both<br/>('o','oa' | 'op','opo','opor')
+    HF->>PR: model writes 'opor'
+    Note over PS: osteoarthritis dies, osteoporosis survives
 ```
 
-Tokens absent from the mask still raise `ValueError` — the no-silent-bypass invariant is unchanged, as are the dead-end fallback and forced-EOS replay.
+### Why a set of states, and not one
+
+Admitting merged and mid-terminal tokens makes the string→token map **one-to-many**: several token sequences spell the same text, and — the part that matters here — a single token can be compatible with more than one place in the grammar.
+
+Take two sibling terminals whose canonical tokenizations diverge:
+
+```
+osteoporosis    → ['oste', 'opor', 'osis']
+osteoarthritis  → ['ost',  'eo', 'ar', 'thritis']
+```
+
+The token `'oste'` is compatible with **both**: it exactly opens `osteoporosis`, and it also lands mid-terminal inside `osteoarthritis` (leaving `residue='o'`).
+
+v1 kept only the **first path found** (`results.setdefault`, scan order) and threw the rest away. That is not a mis-ranking, it is a hijack: the model emits `'oste'` — the canonical first token of `osteoporosis` — the grammar routes it into `osteoarthritis` because that tag happens to come first in scan order, and every subsequent token is then **forced** to spell out the other word. The model expressed the right choice, the grammar overrode it, and there was no way back. Worse, it fails silently: the output is grammatical, so nothing looks wrong.
+
+The rule now is simply that the grammar does not guess:
+
+- a token is admitted if **any** live state admits it;
+- consuming it produces **every** state it is compatible with;
+- the mask is the **union** over the live states;
+- the set collapses on its own as the text accumulates — `'opor'` kills the arthritis branch, `'o'`+`'ar'` kills the porosis branch.
+
+**Disambiguation belongs to the model, by writing; never to the grammar, by guessing.** The output string stays unique regardless — it is fixed by the tokens actually emitted. The set constrains; it does not decide. With `token_lookahead=False` the PDA is deterministic and the set is always a singleton, so nothing changes for the legacy engine.
+
+The generic lesson: **whenever a constrained decoder admits more than one tokenization, ambiguity is unavoidable and must be carried, not resolved.** Any policy that collapses it early — first match, scan order, canonical-only — silently takes a decision that belongs to the model.
+
+Tokens absent from the mask still raise `TokenNotDerivable` — the no-silent-bypass invariant is unchanged, as are the dead-end fallback and forced-EOS replay.
 
 ---
 

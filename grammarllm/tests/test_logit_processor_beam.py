@@ -16,7 +16,7 @@ import pytest
 import torch
 
 from automaton import PushdownAutomaton
-from logits_processor import StatelessLogitsProcessor, _MAX_CACHE_SIZE
+from logits_processor import StatelessLogitsProcessor, PdaSet, _MAX_CACHE_SIZE
 from lookahead import REGEX_TERMINALS_KEY
 from conftest import scores_for, vocab
 
@@ -184,7 +184,7 @@ class TestScoreHistoryReset:
         proc = make_proc(tokenizer, engine)
         seed_cache(proc, tokenizer, [], engine=engine)
         if engine:
-            proc._valid_ids(make_pda(tokenizer, engine))   # populate mask cache
+            proc._valid_ids(PdaSet.from_pda(make_pda(tokenizer, engine)))   # populate mask cache
             assert len(proc.mask_cache) > 0
         assert len(proc.pda_cache) > 0
         proc.reset()

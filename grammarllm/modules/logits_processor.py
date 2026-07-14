@@ -51,9 +51,9 @@ from io import StringIO
 import os
 
 try:
-    from .lookahead import lookahead_tokens, get_vocab_trie
+    from .lookahead import lookahead_paths, get_vocab_trie
 except ImportError:
-    from lookahead import lookahead_tokens, get_vocab_trie
+    from lookahead import lookahead_paths, get_vocab_trie
 
 # FIX: cap the PDA cache to avoid unbounded memory growth during long generations.
 # Each entry stores a PDA object with its stack; with num_beams=5 and
@@ -87,6 +87,72 @@ class TokenNotDerivable(ValueError):
     "corretto".  Ogni ALTRO ValueError sollevato dal PDA resta una vera
     incoerenza interna e continua a propagarsi.
     """
+
+
+class PdaSet:
+    """
+    L'insieme degli stati PDA compatibili con i token generati finora.
+
+    Perché un insieme e non un singolo stato
+    ----------------------------------------
+    Con il lookahead lo stesso token può essere compatibile con PIÙ punti della
+    grammatica.  Caso reale, figli 'osteoarthritis' e 'osteoporosis':
+
+        token 'oste'  ->  ('ost','eo') taglio 1  ->  residue 'o'   [osteoarthritis]
+                      ->  ('oste',)   taglio 4   ->  residue ''    [osteoporosis]
+
+    La versione precedente ne teneva UNO SOLO (il primo in ordine di scansione,
+    via `results.setdefault`) e uccideva l'altro ramo.  Non era un problema di
+    ranking: era un dirottamento.  Il modello emetteva 'oste' — il token
+    canonico di 'osteoporosis', cioè la risposta giusta — la grammatica lo
+    instradava su 'osteoarthritis' perché quel tag veniva prima nella scansione,
+    e poi FORZAVA i token successivi a compitare la parola sbagliata.  Il modello
+    non ha mai potuto scegliere.
+
+    Qui non si sceglie mai.  Restano vivi tutti i rami compatibili, la maschera è
+    l'UNIONE dei token che ciascuno ammette, e l'insieme collassa da solo man
+    mano che il modello scrive: se emette 'opor' sopravvive osteoporosis, se
+    emette 'o' poi 'ar' sopravvive osteoarthritis.  A disambiguare è soltanto il
+    modello, mai la grammatica.
+
+    Il testo finale resta univoco: è determinato dai token emessi.  L'insieme
+    serve a vincolare, non a decidere.
+
+    Con l'engine legacy (lookahead=False) il PDA è deterministico e l'insieme è
+    sempre un singoletto: nessun cambiamento di comportamento.
+    """
+
+    __slots__ = ("states",)
+
+    def __init__(self, states):
+        # {(tuple(stack), residue): PushdownAutomaton} — deduplicato per stato
+        self.states = states
+
+    @classmethod
+    def from_pda(cls, pda):
+        return cls({(tuple(pda.stack), pda.residue): pda})
+
+    @property
+    def digest(self):
+        """Chiave della mask cache: l'insieme è determinato dai suoi stati."""
+        return frozenset(self.states)
+
+    @property
+    def lookahead(self):
+        return getattr(self.representative(), "lookahead", False)
+
+    def representative(self):
+        return next(iter(self.states.values()))
+
+    def eos(self):
+        """Accetta se ALMENO uno stato compatibile ha soddisfatto la grammatica."""
+        return any(p.eos() for p in self.states.values())
+
+    def clone(self):
+        return PdaSet({k: p.clone() for k, p in self.states.items()})
+
+    def __len__(self):
+        return len(self.states)
 
 
 class StatelessLogitsProcessor(LogitsProcessor):
@@ -385,7 +451,7 @@ class StatelessLogitsProcessor(LogitsProcessor):
                 # (LRU bookkeeping — dict preserves insertion order in Python 3.7+).
                 _cached = self.pda_cache.pop(cache_key)
                 self.pda_cache[cache_key] = _cached
-                pda = _cached.clone()
+                pda = _cached.clone()          # PdaSet.clone()
             else:
                 # Cache Miss - Needs Re-simulation
                 # Optimization: Can we find a prefix in cache?
@@ -413,7 +479,7 @@ class StatelessLogitsProcessor(LogitsProcessor):
                     _ancestor = self.pda_cache.pop(ancestor_key)
                     self.pda_cache[ancestor_key] = _ancestor
                     ancestor_pda = _ancestor
-                    pda = ancestor_pda.clone()
+                    pda = ancestor_pda.clone()   # PdaSet.clone()
                     # Un token non derivabile qui NON è un bug di masking: è un
                     # beam di riempimento di HF (vedi TokenNotDerivable), che
                     # porta score -inf.  Lo ritiriamo — forzandogli EOS — invece
@@ -430,7 +496,7 @@ class StatelessLogitsProcessor(LogitsProcessor):
                     # allo step in cui è stato generato, con UNA eccezione: i
                     # beam di riempimento di HF (vedi TokenNotDerivable), che
                     # vengono ritirati.  Nessun altro errore viene nascosto.
-                    pda = base_pda.clone()
+                    pda = PdaSet.from_pda(base_pda.clone())
                     for token in history_tokens:
                         # Si ferma su grammatica esaurita, EOS forzato, o beam
                         # ritirato.
@@ -534,71 +600,98 @@ class StatelessLogitsProcessor(LogitsProcessor):
         self._advance(pda, token)
         return True
 
-    def _valid_ids(self, pda):
+    def _valid_ids(self, pdaset):
         """
-        Valid next token ids for *pda*, routed by engine.
+        Token ammessi dall'insieme di stati — l'UNIONE di quelli ammessi da
+        ciascuno stato compatibile.
 
-        Legacy: (pda.get_tokens(), None).
-        Lookahead: (ids, paths) from the digest-memoized g_t_r mask.
+        Legacy: (pda.get_tokens(), None) — insieme sempre singoletto.
+        Lookahead: (ids, paths) dalla g_t_r memoizzata sul digest dell'insieme,
+        dove paths = { token_id: [ (state_key, path), ... ] } elenca, per ogni
+        token, TUTTI i rami che quel token tiene in vita.
         """
-        if not getattr(pda, "lookahead", False):
-            return pda.get_tokens(), None
-        digest = (tuple(pda.stack), pda.residue)
+        if not pdaset.lookahead:
+            return pdaset.representative().get_tokens(), None
+
+        digest = pdaset.digest
         entry = self.mask_cache.get(digest)
         if entry is None:
-            entry = lookahead_tokens(pda, self.vocab_trie)
+            entry = {}
+            for key, pda in pdaset.states.items():
+                for tid, paths in lookahead_paths(pda, self.vocab_trie).items():
+                    bucket = entry.setdefault(tid, [])
+                    for p in paths:
+                        bucket.append((key, p))
             if len(self.mask_cache) >= _MAX_CACHE_SIZE:
                 for old_key in list(self.mask_cache.keys())[:_MAX_CACHE_SIZE // 4]:
                     del self.mask_cache[old_key]
             self.mask_cache[digest] = entry
         return list(entry.keys()), entry
 
-    def _advance(self, pda, token, paths=None):
+    def _advance(self, pdaset, token, paths=None):
         """
-        Consume *token* on *pda*, routed by engine.
+        Consuma *token* sull'insieme di stati.
 
-        Solleva TokenNotDerivable se il token non è nell'insieme valido dello
-        stato corrente — cioè se il processor lo aveva mascherato a -inf e HF
-        lo ha selezionato lo stesso (beam di riempimento, vedi TokenNotDerivable).
-        Il chiamante ritira quel beam.  Qualsiasi altro ValueError proveniente
-        dal PDA segnala una vera incoerenza interna e si propaga intatto.
+        Il nuovo insieme è formato da TUTTI gli stati raggiungibili con quel
+        token — uno per ogni ramo che il token tiene in vita.  La grammatica non
+        sceglie mai fra i rami compatibili: li mantiene tutti, e sarà il modello,
+        scrivendo il token successivo, a farne sopravvivere uno solo.
+
+        Solleva TokenNotDerivable se il token non è ammesso da NESSUNO stato —
+        cioè se il processor lo aveva mascherato a -inf e HF lo ha selezionato
+        lo stesso (beam di riempimento, vedi TokenNotDerivable).  Il chiamante
+        ritira quel beam.  Qualsiasi altro ValueError proveniente dal PDA segnala
+        una vera incoerenza interna e si propaga intatto.
         """
-        if not getattr(pda, "lookahead", False):
-            # Engine legacy: pre-controlliamo l'appartenenza, così un token
-            # mascherato produce TokenNotDerivable e non il ValueError generico
-            # di next_state() — che non sarebbe distinguibile da un bug vero.
+        if not pdaset.lookahead:
+            # Engine legacy: deterministico, l'insieme resta un singoletto.
+            # Pre-controlliamo l'appartenenza, così un token mascherato produce
+            # TokenNotDerivable e non il ValueError generico di next_state() —
+            # che non sarebbe distinguibile da un bug vero.
+            pda = pdaset.representative()
             if token not in pda.get_tokens():
                 raise TokenNotDerivable(
                     f"Token {token} is not derivable from state "
                     f"(stack={pda.stack})"
                 )
             pda.next_state(token)
+            pdaset.states = {(tuple(pda.stack), pda.residue): pda}
             return
+
         if paths is None:
-            _, paths = self._valid_ids(pda)
-        path = paths.get(token)
-        if path is None:
+            _, paths = self._valid_ids(pdaset)
+        entries = paths.get(token)
+        if not entries:
+            rep = pdaset.representative()
             raise TokenNotDerivable(
                 f"Token {token} is not derivable from state "
-                f"(stack={pda.stack}, residue={pda.residue!r}) under lookahead"
+                f"(stack={rep.stack}, residue={rep.residue!r}) under lookahead"
             )
-        pda.apply_lookahead_path(*path)
 
-    def _retire(self, pda, token):
+        new_states = {}
+        for state_key, path in entries:
+            pda = pdaset.states[state_key].clone()
+            pda.apply_lookahead_path(*path)
+            new_states[(tuple(pda.stack), pda.residue)] = pda
+        pdaset.states = new_states
+
+    def _retire(self, pdaset, token):
         """
         Ritira un beam che HF ha riempito con un token mascherato a -inf.
 
-        Collassa il PDA nello stato esaurito (stack vuoto, residue vuoto), per cui:
-          - pda.eos() diventa True  -> __call__ forza EOS su quella riga;
+        Collassa l'insieme nel solo stato esaurito (stack vuoto, residue vuoto):
+          - eos() diventa True  -> __call__ forza EOS su quella riga;
           - _advance_token() esce subito (return False) su ogni token successivo,
             quindi i discendenti di questo beam si ri-simulano senza risollevare.
         Il beam resta a score -inf: non può vincere né essere restituito.  Il suo
         token spurio è già dentro running_sequences e non è recuperabile — l'unica
         azione corretta è terminarlo.
         """
+        pda = pdaset.representative()
         pda.stack = []
         pda.residue = ""
         pda.current_terminals = []
+        pdaset.states = {((), ""): pda}
 
         self.retired_beams += 1
         msg = (f"Beam ritirato: token {token} non derivabile "
@@ -664,7 +757,7 @@ class StatelessLogitsProcessor(LogitsProcessor):
         
         # Check cache
         if cache_key in self.pda_cache:
-            return self.pda_cache[cache_key].clone()
+            return self.pda_cache[cache_key].clone().representative()
             
         # Fallback: Re-simulate from base PDA.
         # BUG FIX: the old code caught ValueError silently and broke out of the
@@ -678,10 +771,14 @@ class StatelessLogitsProcessor(LogitsProcessor):
         # score più alto.  Un beam ritirato vale -inf e non viene mai restituito
         # finché esiste un'ipotesi valida, quindi un token non derivabile qui è
         # un evento che il chiamante deve sentire, non da assorbire in silenzio.
-        pda = self.base_pdas[prompt_idx].clone()
+        pdaset = PdaSet.from_pda(self.base_pdas[prompt_idx].clone())
         for token in token_ids:
             # TokenNotDerivable (sottoclasse di ValueError) si propaga.
             # _advance_token stops cleanly on grammar completion or forced EOS.
-            if not self._advance_token(pda, token):
+            if not self._advance_token(pdaset, token):
                 break
-        return pda
+        # API pubblica: restituisce un PDA.  A fine generazione la stringa e'
+        # scritta per intero, quindi l'insieme e' collassato su un solo stato
+        # (per grammatiche non ambigue).  Se ne restassero piu' d'uno, la
+        # stringa ammette piu' parse: ne riportiamo uno.
+        return pdaset.representative()

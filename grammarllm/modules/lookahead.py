@@ -59,21 +59,40 @@ def get_vocab_trie(tokenizer):
     return trie
 
 
-def lookahead_tokens(pda, trie):
+def lookahead_paths(pda, trie):
     """
     g_t_r: DFS over PDA fragment transitions pruned by the vocab trie.
 
-    Returns { token_id: (fragments, chars_into_last) } — every vocabulary
-    token realizable from the current (stack, residue) state, including
-    merged tokens spanning terminal boundaries and tokens ending
-    mid-terminal. Depth-0 exact matches reproduce the legacy mask, so the
-    legacy valid set is always a subset of this one.
+    Returns { token_id: [ (fragments, chars_into_last), ... ] } — for every
+    vocabulary token realizable from the current (stack, residue) state, ALL
+    the grammar paths that token is compatible with. Includes merged tokens
+    spanning terminal boundaries and tokens ending mid-terminal. Depth-0 exact
+    matches reproduce the legacy mask, so the legacy valid set is always a
+    subset of this one.
 
-    Collision policy (spec): first path found wins (setdefault), scan order.
+    Why a LIST of paths and not one
+    -------------------------------
+    The same token can be compatible with several places in the grammar. Real
+    case, children 'osteoarthritis' and 'osteoporosis':
+
+        token 'oste'  ->  ('ost','eo') cut at 1  ->  residue 'o'   [osteoarthritis]
+                      ->  ('oste',)   cut at 4   ->  residue ''    [osteoporosis]
+
+    The previous version kept only the FIRST path found (`results.setdefault`,
+    scan order) and discarded the rest. The consequence was not a mis-ranking
+    but a silent hijack: the model emitted 'oste' — the canonical first token
+    of 'osteoporosis' — the grammar routed it to 'osteoarthritis' because that
+    tag came first in scan order, and every following token was then forced to
+    spell out the wrong word. The model never got to choose.
+
+    Returning every path lets the caller keep all compatible states alive and
+    mask on their UNION, so the token stream itself disambiguates: it is the
+    model that picks the branch, by writing, never the grammar by guessing.
+
     Regex terminals (pda.regex_terminals) are yielded whole at depth 0 and
     never crossed (spec L2 — see the regex-lookahead future-work doc).
     """
-    results = {}
+    results: dict[int, list] = {}
 
     def dfs(state, node, consumed):
         if state.residue:
@@ -90,7 +109,9 @@ def lookahead_tokens(pda, trie):
                     # replayed as a plain terminal consumption
                     path = ((frag,), len(frag))
                     for token_id in state.map_terminals_tokens.get(frag, []):
-                        results.setdefault(token_id, path)
+                        bucket = results.setdefault(token_id, [])
+                        if path not in bucket:
+                            bucket.append(path)
                 continue
 
             n = node
@@ -102,10 +123,9 @@ def lookahead_tokens(pda, trie):
                     break
                 if n.token_id is not None:
                     path = (tuple(consumed) + (frag,), i + 1)
-                    if results.setdefault(n.token_id, path) != path:
-                        logging.debug(
-                            f"lookahead collision on token {n.token_id}: kept first path"
-                        )
+                    bucket = results.setdefault(n.token_id, [])
+                    if path not in bucket:
+                        bucket.append(path)
             if alive:
                 child = state.clone()
                 if from_residue:

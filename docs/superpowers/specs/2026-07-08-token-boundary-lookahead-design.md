@@ -1,7 +1,35 @@
 # Token-Boundary Lookahead (g_t_r) — Design
 
 **Date:** 2026-07-08
-**Status:** Approved (brainstorming session)
+**Status:** Approved (brainstorming session) — **superseded in part, see the amendment below**
+
+> ## Amendment: the collision policy was wrong
+>
+> This spec settled token/path collisions with *"first path found wins (setdefault), scan
+> order"*. That decision is the source of a silent correctness bug and has been reverted.
+>
+> Admitting merged and mid-terminal tokens makes the string→token map one-to-many: a single
+> token can be compatible with **several** places in the grammar. Keeping one path and
+> discarding the others does not merely pick a ranking — it takes a decision that belongs to
+> the model, and then forces every later token to live with it. A model emitting the token
+> that canonically opens one terminal could be routed into a *different* terminal purely
+> because that alternative appeared earlier in scan order, with no way to recover. The output
+> stays grammatical, so nothing looks wrong.
+>
+> `lookahead_paths()` now returns **every** compatible path, and the processor carries a
+> **set** of live PDA states (`PdaSet`): the mask is their union, and the set collapses only
+> as the model writes. The grammar never guesses.
+>
+> The general rule: **when a constrained decoder admits more than one tokenization, ambiguity
+> is unavoidable and must be carried, not resolved.** Any policy that collapses it early —
+> first match, scan order, canonical-only — silently overrides the model.
+>
+> Note also that this spec's headline metric (preserved probability mass) is a poor proxy for
+> what the feature is worth: it rewards admitting *more* tokens regardless of whether the
+> grammar then interprets them correctly, and it stayed healthy while accuracy was being lost.
+> Judge the engine on downstream accuracy, not on mask width.
+>
+> See [`token-boundary-lookahead.md` §6](../../token-boundary-lookahead.md#6-advancing-after-the-model-picks-a-token).
 **Scope:** Remove GrammarLLM's token-boundary limitation: let the model emit its natural merged tokens (e.g. `" b"`, `"{ ci"`) even when they span grammar-terminal boundaries or end mid-terminal. Companion doc: [`2026-07-08-regex-lookahead-future-work.md`](2026-07-08-regex-lookahead-future-work.md).
 
 ## Problem
