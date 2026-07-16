@@ -1,0 +1,40 @@
+model:
+  name: "/home/stlab/models/Meta-Llama-3-8B-Instruct"
+  device: "cuda"  # options: auto, cuda, cpu, mps
+  token_lookahead: true  # token-boundary lookahead engine (default-on feature)
+  num_beams: 1
+  do_sample: false
+  batch_size: 5
+
+
+grammar:
+  mode: tags  # options: tags (<<>> notation, config-driven, enforces parent->child) | json (pydantic model in wos_schema.py, flat child enum)
+  productions:
+    'S*': ['<<biochemistry>> WS A', '<<civil>> WS B', '<<cs>> WS C', '<<ece>> WS D', '<<mae>> WS E', '<<medical>> WS F', '<<psychology>> WS G']
+    'WS': ['<< >>']
+    'A': ['<<cell biology>>','<<dna/rna sequencing>>','<<enzymology>>','<<genetics>>','<<human metabolism>>','<<immunology>>','<<molecular biology>>','<<northern blotting>>','<<polymerase chain reaction>>','<<southern blotting>>']
+    'B': ['<<ambient intelligence>>', '<<bamboo as building material>>','<<construction management>>','<<geotextile>>','<<green building>>','<<highway network system>>','<<nano concrete>>','<<rainwater harvesting>>','<<remote sensing>>','<<smart material>>','<<solar energy>>','<<stealth technology>>','<<suspension bridge>>','<<transparent concrete>>','<<underwater windmill>>','<<water pollution>>']
+    'C': ['<<algorithm design>>','<<bioinformatics>>','<<computer graphics>>','<<computer programming>>','<<computer vision>>','<<cryptography>>','<<data structures>>','<<distributed computing>>','<<image processing>>','<<machine learning>>','<<network security>>','<<operating systems>>','<<parallel computing>>','<<relational databases>>','<<software engineering>>','<<structured storage>>','<<symbolic computation>>']
+    'D': ['<<analog signal processing>>','<<control engineering>>','<<digital control>>','<<electric motor>>','<<electrical circuits>>','<<electrical generator>>','<<electrical network>>','<<electricity>>','<<lorentz force law>>','<<microcontroller>>','<<operational amplifier>>','<<pid controller>>','<<satellite radio>>','<<signal-flow graph>>','<<single-phase electric power>>','<<state space representation>>','<<system identification>>','<<voltage law>>']
+    'E': ['<<computer-aided design>>','<<fluid mechanics>>','<<hydraulics>>','<<internal combustion engine>>','<<machine design>>','<<manufacturing engineering>>','<<materials engineering>>','<<strength of materials>>','<<thermodynamics>>']
+    'F': ['<<addiction>>','<<allergies>>',"<<alzheimer's disease>>",'<<ankylosing spondylitis>>','<<anxiety>>','<<asthma>>','<<atopic dermatitis>>','<<atrial fibrillation>>','<<autism>>','<<bipolar disorder>>','<<birth control>>','<<cancer>>',"<<children's health>>","<<crohn's disease>>",'<<dementia>>','<<depression>>','<<diabetes>>','<<digestive health>>','<<emergency contraception>>','<<fungal infection>>','<<headache>>','<<healthy sleep>>','<<heart disease>>','<<hepatitis c>>','<<hereditary angioedema>>','<<hiv/aids>>','<<hypothyroidism>>','<<idiopathic pulmonary fibrosis>>','<<irritable bowel syndrome>>','<<kidney health>>','<<low testosterone>>','<<lymphoma>>','<<medicare>>','<<menopause>>','<<mental health>>','<<migraine>>','<<multiple sclerosis>>','<<myelofibrosis>>','<<osteoarthritis>>','<<osteoporosis>>','<<outdoor health>>', '<<overactive bladder>>', '<<parenting>>', "<<parkinson's disease>>", '<<polycythemia vera>>', '<<psoriasis>>', '<<psoriatic arthritis>>', '<<rheumatoid arthritis>>', '<<schizophrenia>>', '<<senior health>>', '<<skin care>>', '<<smoking cessation>>', '<<sports injuries>>', '<<sprains and strains>>', '<<stress management>>', '<<weight loss>>']
+    'G': ['<<antisocial personality disorder>>','<<attention>>','<<borderline personality disorder>>','<<child abuse>>','<<depression>>','<<eating disorders>>','<<false memories>>','<<gender roles>>','<<leadership>>','<<media violence>>','<<nonverbal communication>>','<<person perception>>','<<prejudice>>','<<prenatal development>>','<<problem-solving>>','<<prosocial behavior>>','<<schizophrenia>>','<<seasonal affective disorder>>','<<social cognition>>']
+
+
+
+prompt:
+  system_prompt: |-
+    You are a hierarchical classification assistant. Your task is to classify user inputs into one of the following hierarchical categories.
+    Respond only with the classification path (e.g., Parent Child).
+    
+    Hierarchy:
+    - biochemistry: cell biology, dna/rna sequencing, enzymology, genetics, human metabolism, immunology, molecular biology, northern blotting, polymerase chain reaction, southern blotting
+    - civil: ambient intelligence, bamboo as building material, construction management, geotextile, green building, highway network system, nano concrete, rainwater harvesting, remote sensing, smart material, solar energy, stealth technology, suspension bridge, transparent concrete, underwater windmill, water pollution
+    - cs: algorithm design, bioinformatics, computer graphics, computer programming, computer vision, cryptography, data structures, distributed computing, image processing, machine learning, network security, operating systems, parallel computing, relational databases, software engineering, structured storage, symbolic computation
+    - ece: analog signal processing, control engineering, digital control, electric motor, electrical circuits, electrical generator, electrical network, electricity, lorentz force law, microcontroller, operational amplifier, pid controller, satellite radio, signal-flow graph, single-phase electric power, state space representation, system identification, voltage law
+    - mae: computer-aided design, fluid mechanics, hydraulics, internal combustion engine, machine design, manufacturing engineering, materials engineering, strength of materials, thermodynamics
+    - medical: addiction, allergies, alzheimer's disease, ankylosing spondylitis, anxiety, asthma, atopic dermatitis, atrial fibrillation, autism, bipolar disorder, birth control, cancer, children's health, crohn's disease, dementia, depression, diabetes, digestive health, emergency contraception, fungal infection, headache, healthy sleep, heart disease, hepatitis c, hereditary angioedema, hiv/aids, hypothyroidism, idiopathic pulmonary fibrosis, irritable bowel syndrome, kidney health, low testosterone, lymphoma, medicare, menopause, mental health, migraine, multiple sclerosis, myelofibrosis, osteoarthritis, osteoporosis, outdoor health, overactive bladder, parenting, parkinson's disease, polycythemia vera, psoriasis, psoriatic arthritis, rheumatoid arthritis, schizophrenia, senior health, skin care, smoking cessation, sports injuries, sprains and strains, stress management, weight loss
+    - psychology: antisocial personality disorder, attention, borderline personality disorder, child abuse, depression, eating disorders, false memories, gender roles, leadership, media violence, nonverbal communication, person perception, prejudice, prenatal development, problem-solving, prosocial behavior, schizophrenia, seasonal affective disorder, social cognition
+  # n_shot: 0 -> no examples, 1 -> few_shot1.py, 10 -> few_shot10.py
+  n_shot: 1
+

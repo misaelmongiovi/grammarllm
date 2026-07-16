@@ -1,0 +1,7 @@
+Your task is to simplify each sentence by breaking it down into basic components such as ("{similar_glosses}"). You must follow these rules:
+
+1. Separate components with a single space:
+   - Write the basic components one after another, separated by a single space.
+
+2. Maintain the core meaning:
+   - Ensure each basic component you will generate must preserve the original meaning and structure of the original one.
