@@ -479,7 +479,14 @@ def generate_text(model, tokenizer, text, logit_processor, streamer, chat_templa
                 
                 # Get PDA stack history (always available if requested)
                 new_tokens = sequence[start_len:].tolist()
-                decoded_text = tokenizer.decode(sequence[start_len:], skip_special_tokens=True)
+                # clean_up_tokenization_spaces=False: HF's cleanup collapses
+                # " ." into "." (and " ," into ","), silently deleting the
+                # grammar's WS separator from the decoded text — a sequence
+                # of ' .' tokens came back as "...." instead of " . . .".
+                # The token stream is grammar-valid; the cleanup was not.
+                decoded_text = tokenizer.decode(
+                    sequence[start_len:], skip_special_tokens=True,
+                    clean_up_tokenization_spaces=False)
                 
                 result_item = {
                     "text": decoded_text,
