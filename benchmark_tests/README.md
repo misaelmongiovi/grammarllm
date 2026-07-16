@@ -9,13 +9,15 @@ columns; `wos` additionally sweeps the few-shot count.
 
 | task | output structure | grammar | vocabulary | test rows |
 |---|---|---|---|---|
-| [`wos`](wos/) | 2-level classification (`parent\|child`) | hierarchy productions | 7 parents × 145 distinct `parent\|child` paths | 2000 |
-| [`gloss_translation`](gloss_translation/) | ASL gloss sequence | separator-nonterminal terminals | 16121 glosses (naturally closed) | 2000 |
-| [`conll_ner`](conll_ner/) | 4-field JSON object | pydantic → enum grammar | 8804 entity spans (closed over all splits) | 2756 |
+| [`wos`](wos/README.md) | 2-level classification (`parent\|child`) | hierarchy productions | 7 parents × 145 distinct `parent\|child` paths | 2000 |
+| [`gloss_translation`](gloss_translation/README.md) | ASL gloss sequence | separator-nonterminal terminals | 16121 glosses (naturally closed) | 2000 |
+| [`conll_ner`](conll_ner/README.md) | 4-field JSON object | pydantic → enum grammar | 8804 entity spans (closed over all splits) | 2756 |
 
 Models: Llama-3.2-1B-Instruct, Llama-3.2-3B-Instruct, Meta-Llama-3-8B-Instruct.
 All runs use the native chat template and the token-lookahead engine (LA).
-Setup details, deviations and per-run commands in each task's README.
+Setup details, intentional deviations and per-run commands live in each task's
+README: [wos](wos/README.md) · [gloss_translation](gloss_translation/README.md)
+· [conll_ner](conll_ner/README.md).
 
 ## Prompt & decoding configuration
 
@@ -41,6 +43,8 @@ so they sit at the same conditions as greedy. Full config in each task's
 ## Results
 
 ### wos — Web of Science hierarchical classification
+
+→ setup and usage: [`wos/README.md`](wos/README.md)
 
 2000 test rows × 9 configurations × 2 decodings, run with `pipe_bench.py`
 (`out_pipe_bench_greedy/` and `out_pipe_bench_beam3_nosample/`, scored with
@@ -97,6 +101,8 @@ score as correct under either parent.
 
 ### gloss_translation — ASLG-PC12 text → gloss
 
+→ setup, paper deviations and usage: [`gloss_translation/README.md`](gloss_translation/README.md)
+
 2000 test rows (full test set), dynamic top-30 few-shot, 16121-gloss grammar
 (single compile). Corpus BLEU / chrF, mean set-F1, Validity (share of rows
 whose every predicted gloss is in the vocabulary).
@@ -114,6 +120,8 @@ Greedy runs are the paper-replication anchors (see task README); beam3 adds
 +7.7 / +1.7 / +2.7 BLEU on 1B / 3B / 8B.
 
 ### conll_ner — CoNLL-2003 NER → JSON
+
+→ setup, data prep and usage: [`conll_ner/README.md`](conll_ner/README.md)
 
 2756 test rows, first-span extraction into
 `{"person", "organization", "location", "misc"}`, 8804-value enum grammar via
