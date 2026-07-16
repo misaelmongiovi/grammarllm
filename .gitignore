@@ -7,7 +7,6 @@ grammarllm.egg-info
 dist
 lib_test.py
 collaboration
-MANIFEST.in
 __pycache__/
 *.pyc
 experiments/
@@ -28,7 +27,10 @@ test_scripts/
 /benchmark_tests/**/checkpoint.csv
 /benchmark_tests/*/output/smoke*/
 /benchmark_tests/*/*.log
+/benchmark_tests/wos/old/
 result_t1
 utils/score_utils.py
+/grammarllm/reports/
+/grammarllm/bug_analysis.md
 site/
 locally_biased_paper
