@@ -16,7 +16,9 @@ Supported JSON Schema constructs
 ✅  enum / Literal (string values)    → <<"value">> alternatives
 ✅  Optional[X]                       → value alternates X | null (key always present)
 ✅  anyOf / oneOf of distinct types   → FIRST-disjoint alternatives
-✅  array (homogeneous)               → [item, item, ...], empty allowed
+✅  array (homogeneous)               → [item, item, ...], empty allowed;
+                                        maxItems (Field(max_length=N)) caps
+                                        the length via bounded unrolling
 ✅  allOf (non-overlapping fields)    → flattened object
 ✅  $ref                              → named shared NT; cycles allowed when
                                         broken by an Optional or array edge
@@ -210,6 +212,12 @@ class _Validator:
                     "Annotate your list field with a concrete element type, "
                     "e.g. list[str] instead of list."
                 )
+            max_items = schema.get("maxItems")
+            if max_items is not None and (not isinstance(max_items, int) or max_items < 1):
+                raise PydanticGrammarError(
+                    f"[{path}] 'maxItems' must be a positive integer, got {max_items!r}. "
+                    "Use e.g. Field(max_length=5) on the list field."
+                )
             self._validate_via_breakable_edge(items, path=f"{path}[items]")
             return
 
@@ -224,6 +232,7 @@ class _Validator:
             "type", "enum", "properties", "required", "items",
             "anyOf", "oneOf", "allOf", "$ref", "title", "description",
             "default", "examples", "$defs", "additionalProperties",
+            "maxItems",
         }
         unknown = set(schema.keys()) - recognised_keys
         if unknown:
@@ -517,11 +526,23 @@ class _Translator:
 
     def _emit_array(self, nt: str, schema: dict[str, Any]) -> None:
         body_nt = f"{nt}_BODY"
-        tail_nt = f"{nt}_TAIL"
         item_symbol = self._value_symbol(nt, "item", schema["items"])
+        max_items = schema.get("maxItems")
         self._productions[nt] = [f"<<[>> {body_nt}"]
-        self._productions[body_nt] = [f"{item_symbol} {tail_nt}", "<<]>>"]
-        self._productions[tail_nt] = [f"<<, >> {item_symbol} {tail_nt}", "<<]>>"]
+        if max_items is None:
+            tail_nt = f"{nt}_TAIL"
+            self._productions[body_nt] = [f"{item_symbol} {tail_nt}", "<<]>>"]
+            self._productions[tail_nt] = [f"<<, >> {item_symbol} {tail_nt}", "<<]>>"]
+        else:
+            # Bounded unroll: TAIL_k is the state after k items; every state
+            # can close with ']', only states below the cap can add an item.
+            # Same <<, >> / <<]>> chunks as the unbounded form — whitespace
+            # between structural tokens is unchanged.
+            self._productions[body_nt] = [f"{item_symbol} {nt}_TAIL1", "<<]>>"]
+            for k in range(1, max_items):
+                self._productions[f"{nt}_TAIL{k}"] = [
+                    f"<<, >> {item_symbol} {nt}_TAIL{k + 1}", "<<]>>"]
+            self._productions[f"{nt}_TAIL{max_items}"] = ["<<]>>"]
 
     # ── anyOf / oneOf (Optional[X] → alternatives + <<null>>) ──────────
 
