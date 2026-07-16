@@ -101,7 +101,7 @@ score as correct under either parent.
 
 ### gloss_translation — ASLG-PC12 text → gloss
 
-→ setup, paper deviations and usage: [`gloss_translation/README.md`](gloss_translation/README.md)
+→ setup and usage: [`gloss_translation/README.md`](gloss_translation/README.md)
 
 2000 test rows (full test set), dynamic top-30 few-shot, 16121-gloss grammar
 (single compile). Corpus BLEU / chrF, mean set-F1, Validity (share of rows
@@ -116,8 +116,7 @@ whose every predicted gloss is in the vocabulary).
 | 8B | greedy+LA | 81.67 | 93.19 | 0.942 | 100.0% |
 | 8B | beam3+LA  | **84.39** | 94.61 | 0.956 | 100.0% |
 
-Greedy runs are the paper-replication anchors (see task README); beam3 adds
-+7.7 / +1.7 / +2.7 BLEU on 1B / 3B / 8B.
+Beam3 adds +7.7 / +1.7 / +2.7 BLEU on 1B / 3B / 8B.
 
 ### conll_ner — CoNLL-2003 NER → JSON
 

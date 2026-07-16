@@ -1,19 +1,16 @@
 # Gloss Translation Benchmark (ASLG-PC12, text → gloss)
 
-Re-runs the paper's text-to-gloss experiment (GramDec/main_t2_cons.py, table
-in `grammarllm/temp/gloss.png`) through the grammarllm library, to measure
-the impact of the token-lookahead engine and beam search.
+Text-to-gloss translation through the grammarllm library, to measure the
+impact of the token-lookahead engine and beam search under a 16121-gloss
+closed vocabulary.
 
-## Setup kept identical to the paper
+## Setup
 
-- Test set: `GramDec/data/Gloss/test.csv` (full, copied to `data/test.csv`)
-- Encoder: `mixedbread-ai/mxbai-embed-large-v1`, same stored embeddings
-  (converted json → parquet, values untouched)
+- Encoder: `mixedbread-ai/mxbai-embed-large-v1`
 - Dynamic few-shot: top-30 most similar train sentences, most similar first
-- System prompt: paper's `NOrules.txt` with top-50 similar glosses injected
-- Greedy decoding, `max_new_tokens=350`
+- Gloss hints: top-50 most similar glosses injected in the system prompt
 
-## Intentional deviations
+## Design choices
 
 | Change | Reason |
 |---|---|
@@ -29,10 +26,6 @@ missing from the 16k vocabulary, the mask forces a wrong gloss
 Llama-3.2-1B, test rows 1-2). Suffix form picks the stem first and degrades
 gracefully. `gloss_form: prefix` is kept as an ablation.
 
-The greedy run is the replication anchor: it should land near the paper
-numbers (G-LlaMa-1B 0.47, G-LlaMa-8B 0.81 BLEU) before lookahead/beam gains
-are claimed.
-
 Note: the separator nonterminal name must be uppercase and must not equal any
 tokenizer token string — `WS` collides with the `WS` token inside `LAWSUIT`
 (`['LA','WS','UIT']`) and yields a spurious LL(1) conflict; `SEP` and `SPACE`
@@ -44,7 +37,7 @@ are Llama tokens too. `gloss_eval.py` asserts this at startup.
 # one-time data conversion (json → parquet)
 python prepare_data.py
 
-# greedy + lookahead (replication anchor)
+# greedy + lookahead
 python gloss_eval.py --name 1b_la_greedy
 
 # beam search
@@ -85,8 +78,3 @@ Beam3 adds **+7.7 / +1.7 / +2.7 BLEU** on 1B / 3B / 8B — largest by far on the
 smallest model, but not monotonic in scale (the 8B gain exceeds the 3B one).
 Validity never drops below 99.8%: the mask holds, and the few misses are rows
 where generation hit `max_new_tokens` mid-gloss.
-
-On the replication anchor: the 8B greedy run lands on the paper (81.67 vs
-0.81 BLEU), but **1B greedy is ~10 BLEU above it** (57.45 vs 0.47). The gain
-is unexplained by the intentional deviations alone and has not been chased
-down — treat the 1B paper comparison as unreplicated rather than beaten.

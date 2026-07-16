@@ -116,4 +116,3 @@ on the 3B (L1 0.188 greedy), below the 1B 0-shot run.
 | `few_shot{1,10}.py` | static few-shot examples |
 | `config.yaml` | grammar productions + the `wos_eval.py` prompt |
 | `wos_eval.py` | alternative single-run entry point; supports `grammar.mode: json` (a flat-child enum via `wos_schema.py`) besides `tags`. **Not** used for the results above |
-| `old/` | superseded experiments (fp32, lookahead-off, beam-sample, JSON-mode ablations), untracked |
