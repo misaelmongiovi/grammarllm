@@ -24,7 +24,7 @@ It allows you to define and apply constraints via formal grammars, ideal for cla
 
 * Python ≥ 3.10
 * 🤗 Transformers ≥ 4.30.0
-* PyTorch **or** TensorFlow
+* PyTorch
 * A pre-trained causal language model (e.g., GPT-2, LLaMA)
 
 ---

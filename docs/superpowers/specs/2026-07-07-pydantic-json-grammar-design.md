@@ -19,7 +19,9 @@ The current converter emits bare key/value terminals. A `Person` model produces 
 - Configurable output styles (compact/key-value). Manual grammars cover that.
 - JSON string escape sequences (`\"`, `\n`, `\uXXXX`) — v1 excludes `"`, `\`, and control chars from string content. Documented limitation.
 - Omittable optional keys. Keys are always emitted (see Decisions).
-- Integer enums, `minItems`/`maxItems` enforcement, `additionalProperties` schemas.
+- Integer enums, `minItems` enforcement, `additionalProperties` schemas.
+  (`maxItems` was a non-goal for v1 but is now supported, via bounded
+  unrolling of the array tail — see `_emit_array`.)
 
 ## Decisions (with rationale)
 

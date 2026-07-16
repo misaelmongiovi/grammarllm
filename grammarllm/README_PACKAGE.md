@@ -10,7 +10,10 @@ It allows you to define and apply constraints via formal grammars, ideal for cla
 * ✅ **Grammar-constrained generation** — define your own production rules
 * 🤗 **Compatible with Hugging Face Transformers**
 * ⚡️ **Linear-time decoding via deterministic PDA** — efficient grammar-constrained generation
-* 🔦 **Beam Search Support** — explore multiple generation paths
+* 🔦 **Beam Search Support** — stateless PDA re-simulation makes beam reordering safe
+* 🔤 **Canonical tokenization by default** — trie-guided lookahead lets the model emit its natural merged tokens across grammar boundaries
+* 🧬 **Pydantic → grammar conversion** — derive a strict-JSON grammar from a `BaseModel`
+* 🎲 **Sampling, batching, multiple return sequences** — all `model.generate()` modes
 * 📊 **Detailed Logging** — visualize probability distributions side-by-side
 
 ---
@@ -19,7 +22,7 @@ It allows you to define and apply constraints via formal grammars, ideal for cla
 
 * Python ≥ 3.10
 * 🤗 Transformers ≥ 4.30.0
-* PyTorch **or** TensorFlow
+* PyTorch
 * A pre-trained causal language model (e.g., GPT-2, LLaMA)
 
 ---
@@ -391,6 +394,41 @@ print(output) # Example output: "<http://example.org/people/GiovanniBianchi><htt
 
 ---
 
+### 4. 🧬 Pydantic → Grammar
+
+Instead of writing productions by hand, derive them from a Pydantic model.
+The generated text is always strict JSON: `json.loads` and
+`Model.model_validate_json` always succeed.
+
+```python
+from typing import Literal, Optional
+from pydantic import BaseModel
+from grammarllm.utils.pydantic_to_grammar import pydantic_to_productions
+
+class Person(BaseModel):
+    name: Literal["mario", "luisa"]
+    mood: Optional[Literal["happy", "sad"]] = None
+
+productions, regex_dict = pydantic_to_productions(Person)
+pars_table, map_tt = get_parsing_table_and_map_tt(tokenizer, productions, regex_dict)
+pdas, streamer = generate_grammar_parameters(tokenizer, pars_table, map_tt)
+
+result = generate_text(model, tokenizer, prompt, pdas, streamer)
+print(result["text"])   # {"name": "mario", "mood": null}
+```
+
+Supported: objects with fixed fields, `Literal` / enum, `Optional[X]`,
+`anyOf` / `oneOf` of distinct types, homogeneous arrays (with
+`Field(max_length=N)` to cap the length), `allOf`, `$ref`, and the
+`str` / `int` / `float` / `bool` primitives.
+
+Constructs that cannot be expressed as an LL(1) grammar are rejected up
+front with `PydanticGrammarError`, in terms of Python types rather than
+parser theory — for example `int | float` unions, whose branches both start
+with a digit.
+
+---
+
 ## 🛠 LL(prefix) Grammar Setup
 
 GrammarLLm enforces syntactic correctness in linear time while maintaining expressiveness in grammar rule
@@ -449,8 +487,10 @@ Each key in regex_dict must follow the format 'regex_' + symbol_name, where symb
 
 ## ⚠️ Limitations
 
-* **Beam Search Support** — supported via stateless re-simulation
-* You cannot define multiple <<exact_string>> in the same rule
+* Grammars must be **LL(1) after tag expansion** — non-LL(1) grammars are rejected at setup time with a diagnostic `Conflict:` error
+* No left recursion (`'A': ["A x"]`) — use right recursion (`'A': ["x A", "ε"]`)
+* The streamer (live token logging) is disabled with beam search (HF limitation); generation itself fully supports beams
+* Pydantic conversion emits strict JSON; no escape sequences in string content (no `"`, `\` or control chars)
 
 ---
 
