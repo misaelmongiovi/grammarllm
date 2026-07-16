@@ -28,11 +28,15 @@ GPUS="${GPUS:-$(nvidia-smi --query-gpu=index --format=csv,noheader | tr '\n' ' '
 ROWS="${ROWS:-0}"                    # 0 = tutte le righe
 BEAMS="${BEAMS:-3}"
 LOOKAHEAD="${LOOKAHEAD:-on}"         # on | off
+SAMPLE="${SAMPLE:-on}"               # on | off  (off = deterministico: greedy con BEAMS=1)
 OUT="${OUT:-$HERE/out_pipe_bench}"
 LOGS="$OUT/logs"
 
 LA_FLAG=""
 [ "$LOOKAHEAD" = "off" ] && LA_FLAG="--no-lookahead"
+
+SAMPLE_FLAG="--sample"
+[ "$SAMPLE" = "off" ] && SAMPLE_FLAG="--no-sample"
 
 mkdir -p "$OUT" "$LOGS"
 
@@ -48,7 +52,7 @@ for model in $MODELS; do
 done
 
 echo "=============================================================="
-echo " WoS pipe benchmark — beam=$BEAMS, sample=on, lookahead=$LOOKAHEAD"
+echo " WoS pipe benchmark — beam=$BEAMS, sample=$SAMPLE, lookahead=$LOOKAHEAD"
 echo " job in coda : ${#QUEUE[@]}   ($(printf '%s ' "${QUEUE[@]}"))"
 echo " GPU         : $GPUS"
 echo " righe       : $([ "$ROWS" = 0 ] && echo 'tutte (2000)' || echo "$ROWS")"
@@ -77,7 +81,7 @@ launch() {   # launch <gpu> <model> <nshot>
   echo "[gpu $gpu] avvio $tag"
   CUDA_VISIBLE_DEVICES="$gpu" nohup uv run --project "$ROOT" python "$HERE/pipe_bench.py" \
       --model "$MODELS_DIR/$model" --nshot "$nshot" --out "$out" \
-      --beams "$BEAMS" --sample $LA_FLAG $rows_arg > "$log" 2>&1 &
+      --beams "$BEAMS" $SAMPLE_FLAG $LA_FLAG $rows_arg > "$log" 2>&1 &
   PID_ON_GPU[$gpu]=$!
   JOB_ON_GPU[$gpu]="$tag"
   return 0
