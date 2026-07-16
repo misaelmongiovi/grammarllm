@@ -30,6 +30,19 @@ classifiers = [
 
 [project.optional-dependencies]
 analysis = ["matplotlib"]
+# Only for reproducing benchmark_tests/ — not needed to use the library.
+bench = [
+    "accelerate>=0.26.0",   # device_map sharding in wos/pipe_bench.py
+    "datasets",             # CoNLL-2003 download
+    "omegaconf",            # config.yaml loading
+    "pandas",
+    "pyarrow",              # parquet engine for the retrieval pools
+    "python-dotenv",        # wos/wos_eval.py
+    "sacrebleu",            # gloss BLEU/chrF
+    "scikit-learn",         # wos F1 scoring
+    "sentence-transformers",# mxbai retrieval encoder
+    "tqdm",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

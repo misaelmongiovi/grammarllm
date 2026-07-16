@@ -109,6 +109,21 @@ Runnable scripts (small model, CPU-friendly) in [examples/](examples/):
 | [`examples/beam_search_analysis.py`](examples/beam_search_analysis.py) | beam search, multiple sequences, PDA stack history, preserved-mass analysis + plot |
 | [`examples/regex_terminals.py`](examples/regex_terminals.py) | open token classes (words, numbers) via `regex_dict` |
 
+### 📊 Benchmarks
+
+[benchmark_tests/](benchmark_tests/) evaluates the library on three tasks —
+hierarchical classification (WoS), text→gloss translation (ASLG-PC12) and
+NER→JSON extraction (CoNLL-2003) — comparing greedy vs beam search under the
+grammar mask on Llama-3.2-1B/3B and Llama-3-8B. Results, per-task setup and
+cross-task takeaways: [benchmark_tests/README.md](benchmark_tests/README.md).
+
+The benchmarks are standalone and not needed to use the library; their extra
+dependencies live in the `bench` extra:
+
+```bash
+pip install -e ".[bench]"
+```
+
 ### 📐 Structured Generation (RDF triples)
 
 A larger grammar mixing exact strings, non-terminals, and regex terminals:
