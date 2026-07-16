@@ -2,7 +2,7 @@
 #
 # run_bench.sh — coda dei benchmark WoS con separatore PIPE e beam=3.
 #
-#   modelli : Llama-3.2-1B-Instruct, Meta-Llama-3-8B-Instruct
+#   modelli : Llama-3.2-1B-Instruct, Llama-3.2-3B-Instruct, Meta-Llama-3-8B-Instruct
 #   task    : 0-shot, 1-shot, 10-shot   (esempi da few_shot{1,10}.py, convertiti a pipe)
 #   decoding: num_beams=3, do_sample=True
 #   righe   : tutte (2000)
@@ -10,10 +10,12 @@
 # I job vengono distribuiti sulle GPU disponibili, uno per GPU, e la coda avanza
 # man mano che una GPU si libera. Al termine stampa la tabella dei risultati.
 #
-#   ./run_bench.sh                  # tutto
-#   GPUS="0 1"      ./run_bench.sh  # solo su 2 GPU
-#   ROWS=200        ./run_bench.sh  # smoke test veloce
-#   LOOKAHEAD=off   ./run_bench.sh  # baseline boundary-strict
+#   ./run_bench.sh                             # tutto
+#   GPUS="0 1"                 ./run_bench.sh  # solo su 2 GPU
+#   ROWS=200                   ./run_bench.sh  # smoke test veloce
+#   LOOKAHEAD=off              ./run_bench.sh  # baseline boundary-strict
+#   MODELS="Llama-3.2-3B-Instruct" ./run_bench.sh   # un solo modello
+#   SHOTS="0 1 10"             ./run_bench.sh  # sottoinsieme dei task
 #
 set -uo pipefail
 
@@ -35,9 +37,12 @@ LA_FLAG=""
 mkdir -p "$OUT" "$LOGS"
 
 # ── la coda: un job per riga, "modello:nshot" ────────────────────────────────
+MODELS="${MODELS:-Llama-3.2-1B-Instruct Llama-3.2-3B-Instruct Meta-Llama-3-8B-Instruct}"
+SHOTS="${SHOTS:-0 1 10}"
+
 QUEUE=()
-for model in Llama-3.2-1B-Instruct Meta-Llama-3-8B-Instruct; do
-  for nshot in 0 1 10; do
+for model in $MODELS; do
+  for nshot in $SHOTS; do
     QUEUE+=("$model:$nshot")
   done
 done

@@ -86,12 +86,14 @@ def main():
     ap.add_argument('--no-lookahead', dest='lookahead', action='store_false', default=True)
     ap.add_argument('--rows', type=int, default=0, help='0 = tutte')
     ap.add_argument('--batch', type=int, default=5)
+    ap.add_argument('--device-map', default=None,
+                    help="shard su piu' GPU (es. 'balanced'); serve per il 70B")
     args = ap.parse_args()
 
     logging.disable(logging.INFO)
     name = os.path.basename(args.model)
     print(f">>> {name} | {args.nshot}-shot | beams={args.beams} sample={args.sample} "
-          f"lookahead={args.lookahead} | sep='{SEP}'", flush=True)
+          f"lookahead={args.lookahead} | sep='{SEP}' | device_map={args.device_map}", flush=True)
 
     cfg = OmegaConf.load(os.path.join(HERE, 'config.yaml'))
     prods, labels = build_grammar(cfg)
@@ -103,8 +105,17 @@ def main():
         raise SystemExit(f"{name} non ha un chat template nativo (modello base?)")
     native_template = tok.chat_template      # MAI grammarllm.chat_template: non e' llama-3
 
-    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.float16)
-    model = model.to('cuda').eval()
+    # I modelli che non stanno su una GPU sola (70B: ~141 GB in fp16) vanno
+    # shardati con device_map.  NB: e' pipeline parallelism naive — i layer
+    # stanno su GPU diverse ma vengono eseguiti IN SEQUENZA, quindi le GPU
+    # extra danno memoria, non throughput.
+    if args.device_map:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, dtype=torch.float16, device_map=args.device_map)
+        model.eval()
+    else:
+        model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.float16)
+        model = model.to('cuda').eval()
     pars_table, map_tt = get_parsing_table_and_map_tt(tok, productions=prods)
 
     df = pd.read_csv(os.path.join(ROOT, 'data/WebOfScience/test_data.csv'))
