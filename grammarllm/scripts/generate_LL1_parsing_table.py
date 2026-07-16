@@ -401,11 +401,17 @@ def parsing_table(final_rules):
         """
         Serializza la parsing table in JSON leggibile per debug.
 
-        Salva in grammarllm/temp/table_parsing.json.  Il file viene
+        Salva in <package>/temp/table_parsing.json.  Il file viene
         sovrascritto ad ogni chiamata.  Utile per ispezionare la tabella
         generata e diagnosticare conflitti o entry mancanti.
+
+        Il percorso è ancorato alla directory del package (non alla cwd):
+        un path relativo creava una directory 'grammarllm/' nella cwd del
+        chiamante, che faceva shadowing del package installato ai run
+        successivi (ImportError da namespace package).
         """
-        output_grammar_file = os.path.join('grammarllm/temp', 'table_parsing.json')
+        package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        output_grammar_file = os.path.join(package_dir, 'temp', 'table_parsing.json')
         os.makedirs(os.path.dirname(output_grammar_file), exist_ok=True)
         with open(output_grammar_file, "w", encoding="utf-8") as f:
             f.write("{\n")

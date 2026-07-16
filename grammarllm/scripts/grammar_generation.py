@@ -916,11 +916,12 @@ class ProductionRuleProcessor:
         """
         Serializza la grammatica finale in formato testuale per ispezione.
 
-        Scrive in output/temp/final_grammar.txt. Utile per debug: permette
+        Scrive in <package>/temp/final_grammar.txt. Utile per debug: permette
         di verificare che le produzioni generate corrispondano a quanto atteso.
 
         Nota: la docstring era misposizionata dopo il codice (BUG-15, ora
-        corretta). Il path output/temp è relativo alla working directory.
+        corretta). Il path è ancorato alla directory del package: un path
+        relativo alla cwd sporcava la working directory del chiamante.
 
         Parameters
         ----------
@@ -929,7 +930,8 @@ class ProductionRuleProcessor:
         filename : str
             Nome del file di output (default: 'final_grammar.txt').
         """
-        output_filename = os.path.join("output/temp", filename)
+        package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        output_filename = os.path.join(package_dir, "temp", filename)
         os.makedirs(os.path.dirname(output_filename), exist_ok=True)
         if not grammar:
             logging.info("  Grammatica vuota")
