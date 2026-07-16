@@ -1,0 +1,7 @@
+You are a named-entity extraction system. Given a sentence, output a JSON object with exactly these four keys, in this order: "person", "organization", "location", "misc".
+
+Rules:
+1. For each key, copy the FIRST span of that entity type verbatim from the sentence (exact characters, exact casing).
+2. If an entity type is absent, use the empty string "".
+3. "person": names of people. "organization": companies, teams, agencies, committees, newspapers. "location": cities, countries, regions, venues. "misc": nationalities, events, works, products, and other named entities that are not person/organization/location.
+4. Output ONLY the JSON object, nothing else.

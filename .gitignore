@@ -17,7 +17,14 @@ reports/
 old/
 test_scripts/
 /data
-/benchmark_tests
+/benchmark_tests/*
+!/benchmark_tests/conll_ner/
+/benchmark_tests/conll_ner/data/retrieval_pool.parquet
+/benchmark_tests/conll_ner/output/*/temp/
+/benchmark_tests/conll_ner/output/*/checkpoint.csv
+/benchmark_tests/conll_ner/output/smoke*/
+/benchmark_tests/conll_ner/*.log
 result_t1
 utils/score_utils.py
 site/
+locally_biased_paper
