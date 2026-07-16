@@ -18,6 +18,7 @@ old/
 test_scripts/
 /data
 /benchmark_tests/*
+!/benchmark_tests/README.md
 !/benchmark_tests/conll_ner/
 !/benchmark_tests/gloss_translation/
 !/benchmark_tests/wos/
