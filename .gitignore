@@ -29,6 +29,8 @@ test_scripts/
 /benchmark_tests/*/output/smoke*/
 /benchmark_tests/*/*.log
 /benchmark_tests/wos/old/
+# Internal reconstruction notes (data provenance, prior baselines, open questions)
+NOTES.local.md
 result_t1
 utils/score_utils.py
 /grammarllm/reports/
