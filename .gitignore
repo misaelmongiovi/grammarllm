@@ -1,4 +1,5 @@
 grammarllm/temp/
+/output/
 grammarllm/utils/gloss_class.py
 grammarllm/utils/examples.py
 .DS_Store
