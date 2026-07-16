@@ -1,0 +1,34 @@
+model:
+  name: "/home/stlab/models/Llama-3.2-1B-Instruct"
+  device: "cuda"
+  token_lookahead: true   # lookahead engine (LA); false = boundary-strict baseline
+  num_beams: 1            # 1 = greedy (paper setting); >1 = beam search
+  do_sample: false
+  max_new_tokens: 350
+  # length_penalty / early_stopping: se assenti si usano i default HF
+  # (beam alle stesse condizioni del paper). Decommentare per sperimentare.
+  # length_penalty: 0.0
+  # early_stopping: true
+
+grammar:
+  # suffix (paper): semantic_switch rewrite, stem before tag (QUESTION-DESC).
+  # prefix: original ASLG form (DESC-QUESTION) — ablation, degrades greedy.
+  gloss_form: "suffix"
+
+embedder:
+  # Same encoder used for the paper runs (GramDec/main_t2_cons.py)
+  name: "mixedbread-ai/mxbai-embed-large-v1"
+  device: "cuda"
+
+retrieval:
+  n_examples: 30      # dynamic few-shot examples (paper: 30)
+  n_gloss_hints: 50   # similar glosses injected in the system prompt (paper: 50)
+
+paths:
+  test_data: "data/test.csv"
+  retrieval_pool: "data/retrieval_pool.parquet"
+  gloss_vocab: "data/gloss_vocab.parquet"
+  output_dir: "output"
+
+run:
+  checkpoint_every: 100

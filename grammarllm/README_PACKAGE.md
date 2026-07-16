@@ -10,6 +10,11 @@ It allows you to define and apply constraints via formal grammars, ideal for cla
 * ✅ **Grammar-constrained generation** — define your own production rules
 * 🤗 **Compatible with Hugging Face Transformers**
 * ⚡️ **Linear-time decoding via deterministic PDA** — efficient grammar-constrained generation
+* 🔦 **Beam Search Support** — stateless PDA re-simulation makes beam reordering safe
+* 🔤 **Canonical tokenization by default** — trie-guided lookahead lets the model emit its natural merged tokens across grammar boundaries
+* 🧬 **Pydantic → grammar conversion** — derive a strict-JSON grammar from a `BaseModel`
+* 🎲 **Sampling, batching, multiple return sequences** — all `model.generate()` modes
+* 📊 **Detailed Logging** — visualize probability distributions side-by-side
 
 ---
 
@@ -17,18 +22,18 @@ It allows you to define and apply constraints via formal grammars, ideal for cla
 
 * Python ≥ 3.10
 * 🤗 Transformers ≥ 4.30.0
-* PyTorch **or** TensorFlow
+* PyTorch
 * A pre-trained causal language model (e.g., GPT-2, LLaMA)
 
 ---
 
 ## ⚙️ Installation
+
 The package is currently available on Test PyPI. To install the library, use the following command:
 
 ```bash
 pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple grammarllm
 ```
-
 
 ---
 
@@ -87,9 +92,14 @@ This function generates text that adheres to your specified grammar constraints.
 **Additional Options:**
 
 * `chat_template`: Pass this argument if you need to provide examples and want to format the full prompt appropriately for a chat model.
-* Other options to control generation length, sampling strategies, and overall behavior.
+* `num_beams`: Number of beams for beam search (default: 1).
+* `temperature`: Sampling temperature (default: 1.0).
+* `top_p`: Nucleus sampling parameter (default: None).
+* `do_sample`: Enable sampling (default: False).
+* `num_return_sequences`: Number of sequences to return (default: 1).
 
-----
+---
+
 ## 🔍 Use Cases
 
 ### 1. 🔮 Classification
@@ -384,6 +394,41 @@ print(output) # Example output: "<http://example.org/people/GiovanniBianchi><htt
 
 ---
 
+### 4. 🧬 Pydantic → Grammar
+
+Instead of writing productions by hand, derive them from a Pydantic model.
+The generated text is always strict JSON: `json.loads` and
+`Model.model_validate_json` always succeed.
+
+```python
+from typing import Literal, Optional
+from pydantic import BaseModel
+from grammarllm.utils.pydantic_to_grammar import pydantic_to_productions
+
+class Person(BaseModel):
+    name: Literal["mario", "luisa"]
+    mood: Optional[Literal["happy", "sad"]] = None
+
+productions, regex_dict = pydantic_to_productions(Person)
+pars_table, map_tt = get_parsing_table_and_map_tt(tokenizer, productions, regex_dict)
+pdas, streamer = generate_grammar_parameters(tokenizer, pars_table, map_tt)
+
+result = generate_text(model, tokenizer, prompt, pdas, streamer)
+print(result["text"])   # {"name": "mario", "mood": null}
+```
+
+Supported: objects with fixed fields, `Literal` / enum, `Optional[X]`,
+`anyOf` / `oneOf` of distinct types, homogeneous arrays (with
+`Field(max_length=N)` to cap the length), `allOf`, `$ref`, and the
+`str` / `int` / `float` / `bool` primitives.
+
+Constructs that cannot be expressed as an LL(1) grammar are rejected up
+front with `PydanticGrammarError`, in terms of Python types rather than
+parser theory — for example `int | float` unions, whose branches both start
+with a digit.
+
+---
+
 ## 🛠 LL(prefix) Grammar Setup
 
 GrammarLLm enforces syntactic correctness in linear time while maintaining expressiveness in grammar rule
@@ -397,8 +442,6 @@ definition. To achieve this, we propose LL(prefix) a novel formalization that ge
 * **Uppercase** `S*` symbol is the start symbol.
 * Use `ε` for epsilon (empty) transitions
 * In JSON format, square brackets `[]` represent a production rule, and commas inside the brackets (e.g., `[A, B, C]`) serve the same purpose as the `|` (OR) operator in formal language notation.
-
-
 
 ---
 
@@ -440,13 +483,14 @@ Use custom regex keys as terminal symbols in your grammar productions.
 Important:
 Each key in regex_dict must follow the format 'regex_' + symbol_name, where symbol_name exactly matches the corresponding terminal symbol used in your grammar production rules.
 
-
 ---
 
 ## ⚠️ Limitations
 
-* ❌ Beam search is **not supported**
-* You cannot define multiple <<exact_string>> in the same rule
+* Grammars must be **LL(1) after tag expansion** — non-LL(1) grammars are rejected at setup time with a diagnostic `Conflict:` error
+* No left recursion (`'A': ["A x"]`) — use right recursion (`'A': ["x A", "ε"]`)
+* The streamer (live token logging) is disabled with beam search (HF limitation); generation itself fully supports beams
+* Pydantic conversion emits strict JSON; no escape sequences in string content (no `"`, `\` or control chars)
 
 ---
 
@@ -458,10 +502,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📫 Contact
 
-📧 Email:  
+📧 Email:
 [gabriele.tuccio@phd.unict.it](mailto:gabriele.tuccio@phd.unict.it)
 [luana.bulla@phd.unict.it](mailto:luana.bulla@phd.unict.it)
 [misael.mongiovi@unict.it](mailto:misael.mongiovi@unict.it)
-
-
-

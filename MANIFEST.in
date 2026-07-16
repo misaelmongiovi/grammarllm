@@ -1,0 +1,35 @@
+# Escludi il README e il file requirements della repository
+exclude README.md
+exclude requirements.txt
+
+# Includi esplicitamente il README del pacchetto
+include grammarllm/README_PACKAGE.md
+
+# Includi altri file necessari
+include LICENSE
+include pyproject.toml
+
+# Includi tutto il codice del pacchetto
+recursive-include grammarllm *.py
+recursive-include grammarllm *.md
+
+# Escludi codice obsoleto, test e scratch: non fanno parte della distribuzione
+prune grammarllm/deprecated
+prune grammarllm/modules/deprecated
+prune grammarllm/modules/legacy
+prune grammarllm/scripts/deprecated
+prune grammarllm/tests
+prune grammarllm/temp
+
+# Note di sviluppo interne: restano in locale, fuori dalla distribuzione
+prune grammarllm/reports
+exclude grammarllm/bug_analysis.md
+
+# File locali non versionati: non fanno parte del codice rilasciato
+exclude grammarllm/utils/examples.py
+exclude grammarllm/utils/gloss_class.py
+
+# Escludi file temporanei e cache
+exclude .gitignore
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]

@@ -10,6 +10,13 @@ It allows you to define and apply constraints via formal grammars, ideal for cla
 * ✅ **Grammar-constrained generation** — define your own production rules
 * 🤗 **Compatible with Hugging Face Transformers**
 * ⚡️ **Linear-time decoding via deterministic PDA** — efficient grammar-constrained generation
+* 🔦 **Beam Search Support** — stateless PDA re-simulation makes beam reordering safe
+* 🔤 **Canonical tokenization by default** — trie-guided lookahead lets the model emit its natural merged tokens across grammar boundaries ([how it works, with diagrams](docs/token-boundary-lookahead.md))
+* 🎲 **Sampling, batching, multiple return sequences** — all `model.generate()` modes
+* 📊 **Constraint-impact analysis** — per-step preserved probability mass, entropy, plots
+* 🧬 **Pydantic → grammar conversion** — derive a strict-JSON grammar from a `BaseModel`
+
+📚 **Full documentation: [docs/usage.md](docs/usage.md)** — runnable scripts in [examples/](examples/)
 
 ---
 
@@ -17,174 +24,111 @@ It allows you to define and apply constraints via formal grammars, ideal for cla
 
 * Python ≥ 3.10
 * 🤗 Transformers ≥ 4.30.0
-* PyTorch **or** TensorFlow
+* PyTorch
 * A pre-trained causal language model (e.g., GPT-2, LLaMA)
 
 ---
 
 ## ⚙️ Installation
 
-Run the following commands to clone the repository and install the requirements:
+Run the following commands to clone the repository and install dependencies using **uv** (recommended) or pip:
 
 ```bash
 git clone https://github.com/misaelmongiovi/grammarllm.git
+cd grammarllm
 ```
+
+Using uv:
 
 ```bash
-cd grammarllm
-pip install -r requirements.txt
+uv sync
+uv run python examples/classification.py
 ```
 
 ---
 
-## 🔍 Use Cases
-
-### 1. 🔮 Classification
+## ⚡️ Quick Start
 
 ```python
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from grammarllm.main import generate_grammar_parameters, generate_text
-from grammarllm.utils.grammar_utils import get_parsing_table_and_map_tt
-from grammarllm.utils.logger import setup_logging
-from grammarllm.utils.toolbox import create_prompt, chat_template 
+from grammarllm import (
+    get_parsing_table_and_map_tt,
+    generate_grammar_parameters,
+    generate_text,
+    setup_logging,
+)
 
-def main():
-    setup_logging()
+setup_logging()
 
-    productions = { 'S*': ["<<positive >> A", "<<negative >> B", "<<neutral >> C"],
-                    'A': ["<<happy>>", "<<peaceful>>", "<<joyful>>"],
-                    'B': ['<<sad>>', '<<angry>>', '<<frustrated>>'],
-                    'C': ['<<calm>>', '<<indifferent>>', '<<unemotional>>']
-                  }
-    
-    system_prompt = """You are a hierarchical classification assistant. Your task is to classify the user input 
-                        into one of the following hierarchical categories as shown in the followig examples\n\n"""
+productions = {
+    'S*': ["<<positive>> A", "<<negative>> B"],
+    'A':  ["<< happy>>", "<< peaceful>>"],
+    'B':  ["<< gloomy>>", "<< angry>>"],
+}
 
-    examples = [
-        {"role": "user", "content": "I just got a promotion!"},
-        {"role": "assistant", "content": "positive joyful"},
+tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B-Instruct")
+model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-0.5B-Instruct")
 
-        {"role": "user", "content": "Nothing ever goes my way."},
-        {"role": "assistant", "content": "negative frustrated"},
-
-        {"role": "user", "content": "The lake was still and quiet."},
-        {"role": "assistant", "content": "neutral calm"},
-
-        {"role": "user", "content": "I miss my family so much."},
-        {"role": "assistant", "content": "negative sad"}
-    ]
-
-    prompt=create_prompt(
-        prompt_input="It's raining and I feel a bit down.",
-        system_prompt=system_prompt,
-        examples=examples
-    )
-
-    
-    model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
-
-    pars_table, map_terminal_tokens = get_parsing_table_and_map_tt(tokenizer, productions)
-
-    LogitProcessor, Streamer = generate_grammar_parameters(
-        tokenizer, pars_table, map_terminal_tokens
-    )
-
-    output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer, chat_template)
-    print(output)  # → "negative sad"
+# Phase 1 — once per (grammar, tokenizer)
+pars_table, map_tt = get_parsing_table_and_map_tt(tokenizer, productions)
+# Phase 2 — once per session
+pdas, streamer = generate_grammar_parameters(tokenizer, pars_table, map_tt)
+# Phase 3 — every call
+result = generate_text(
+    model, tokenizer,
+    "Classify the sentiment: 'I love sunny days.' Answer:",
+    pdas, streamer,
+    max_new_tokens=8,
+)
+print(result["text"])         # "positive happy"
+print(result["probability"])  # 0.947
+print(result["pda_stack"])    # [] → grammar fully satisfied
 ```
+
+Generation modes (any extra kwarg is forwarded to `model.generate()`):
+
+```python
+generate_text(..., num_beams=4)                            # beam search
+generate_text(..., num_beams=4, num_return_sequences=3)    # top-3 beams, sorted by probability
+generate_text(..., do_sample=True, top_p=0.9, temperature=0.7)
+generate_text(model, tokenizer, [prompt1, prompt2], ...)   # batch of prompts
+generate_text(..., output_scores=True)                     # + per-step pre/post-masking logits
+```
+
+See **[docs/usage.md](docs/usage.md)** for the full API, result formats, and troubleshooting.
 
 ---
 
-### 2. 🧩 Vocabulary Restriction
+## 🔍 Examples
 
-```python
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from grammarllm.main import generate_grammar_parameters, generate_text
-from grammarllm.utils.grammar_utils import get_parsing_table_and_map_tt
-from grammarllm.utils.logger import setup_logging
-from grammarllm.utils.toolbox import create_prompt, chat_template 
+Runnable scripts (small model, CPU-friendly) in [examples/](examples/):
 
-def main():
-    setup_logging()
+| Script | Shows |
+|---|---|
+| [`examples/classification.py`](examples/classification.py) | hierarchical classification with chat template + few-shot prompt |
+| [`examples/beam_search_analysis.py`](examples/beam_search_analysis.py) | beam search, multiple sequences, PDA stack history, preserved-mass analysis + plot |
+| [`examples/regex_terminals.py`](examples/regex_terminals.py) | open token classes (words, numbers) via `regex_dict` |
 
-    productions = {
-    'S*': [
-        "<< Yes>> S*",
-        "<< I'm>> S*",
-        "<< very>> S*",
-        "<< happy>> S*",
-        "<< !>> S*",
-        "<< so>> S*",
-        "<< really>> S*",
-        "<< excited>> S*",
-        "<< today>> S*",
-        "<< thanks>> S*",
-        "<< you>> S*",
-        "<< much>> S*",
-        "<< great>> S*",
-        "<< good>> S*",
-        "<< fine>> S*",
-        "<< amazing>> S*",
-        ]
-    }
+### 📊 Benchmarks
 
-    system_prompt = """You are a text generation assistant. When generating responses, you must use only the words that
-                        appear in the provided examples below. You should not introduce any new words outside of those examples."""
+[benchmark_tests/](benchmark_tests/) evaluates the library on three tasks —
+hierarchical classification (WoS), text→gloss translation (ASLG-PC12) and
+NER→JSON extraction (CoNLL-2003) — comparing greedy vs beam search under the
+grammar mask on Llama-3.2-1B/3B and Llama-3-8B. Results, per-task setup and
+cross-task takeaways: [benchmark_tests/README.md](benchmark_tests/README.md).
 
+The benchmarks are standalone and not needed to use the library; their extra
+dependencies live in the `bench` extra:
 
-    examples = [
-        {"role": "user", "content": "How are you?"},
-        {"role": "assistant", "content": "I'm very happy"},
-
-        {"role": "user", "content": "Is everything okay?"},
-        {"role": "assistant", "content": "Yes, I'm so excited!"},
-
-        {"role": "user", "content": "How was your day?"},
-        {"role": "assistant", "content": "I'm really happy today!"},
-
-        {"role": "user", "content": "Do you feel good?"},
-        {"role": "assistant", "content": "Yes, I feel great, thanks!"},
-
-        {"role": "user", "content": "What's up?"},
-        {"role": "assistant", "content": "I'm fine, thank you so much!"},
-
-        {"role": "user", "content": "Anything special today?"},
-        {"role": "assistant", "content": "I'm very excited and happy today!"}
-        ]
-    
-    prompt=create_prompt(
-        prompt_input="Say something of positive:",
-        system_prompt=system_prompt,
-        examples=examples
-        )
-
-    model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
-
-    pars_table, map_terminal_tokens = get_parsing_table_and_map_tt(tokenizer, productions)
-
-    LogitProcessor, Streamer = generate_grammar_parameters(
-        tokenizer, pars_table, map_terminal_tokens
-    )
-
-    output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer, chat_template)
-    print(output)  # → "I'm happy"
+```bash
+pip install -e ".[bench]"
 ```
 
----
+### 📐 Structured Generation (RDF triples)
 
-### 3. 📐 Structured Generation
+A larger grammar mixing exact strings, non-terminals, and regex terminals:
 
 ```python
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from grammarllm.main import generate_grammar_parameters, generate_text
-from grammarllm.utils.grammar_utils import get_parsing_table_and_map_tt
-from grammarllm.utils.logger import setup_logging
-from grammarllm.utils.toolbox import create_prompt, chat_template 
-
-def main():
-    setup_logging()
     productions = {
         'S*': ["SUBJ PRED OBJ . S*"],
         'SUBJ': ["IRI", "BLANKNODE"],
@@ -252,72 +196,36 @@ def main():
         }
 
 
-    system_prompt = """You are an assistant that converts natural language sentences into RDF triples syntax.
+    # prompt = create_prompt(prompt_input=..., system_prompt=..., examples=...)
+    # (few-shot RDF prompt omitted for brevity — full version in main.py)
 
-    Follow these rules:
-
-    1. Use URIs (`<...>`) for:
-    - Identifiable entities such as people, properties, or concepts.
-    - Example:
-        <http://example.org/people/MarioRossi> <http://example.org/properties/hasFriend> <http://example.org/people/LuisaVerdi> .
-
-    2. Use literals (`"..."`) for:
-    - Plain values such as professions, cities, names, numbers, dates, or booleans.
-    - Add datatypes (`^^<...>`) or language tags (`@lang`) if needed.
-    - Examples:
-        "engineer"@en  
-        "40"^^<http://www.w3.org/2001/XMLSchema#integer>
-
-    3. Use blank nodes (`_:`) only if:
-    - The object is anonymous and has internal structure (i.e., it has its own properties).
-    - Example:
-        <http://example.org/people/MarioRossi> <http://example.org/properties/hasAddress> _:b1 .
-        _:b1 <http://example.org/properties/street> "Via Roma" .
-        _:b1 <http://example.org/properties/city> "Milano" .
-
-    Never use a blank node (`_:`) for simple values like "engineer" or "teacher". Use a literal (`"..."`) instead.
-
-    Now use the following examples to generate clean and correct RDF triples from user input."""
-
-    examples = [
-        {"role": "user", "content": "Mario Rossi is 40 years old."},
-        {"role": "assistant", "content": "<http://example.org/people/MarioRossi> <http://example.org/properties/hasAge> \"40\" ^^<http://www.w3.org/2001/XMLSchema#integer> ."},
-
-        {"role": "user", "content": "Luisa Verdi is an engineer."},
-        {"role": "assistant", "content": "<http://example.org/people/LuisaVerdi> <http://example.org/properties/hasProfession> \"engineer\" @en ."},
-
-        {"role": "user", "content": "Giovanni Bianchi earns 55000."},
-        {"role": "assistant", "content": "<http://example.org/people/GiovanniBianchi> <http://example.org/properties/hasSalary> \"55000\" ^^<http://www.w3.org/2001/XMLSchema#decimal> ."},
-
-        {"role": "user", "content": "Mario Rossi has an anonymous node as a contact."},
-        {"role": "assistant", "content": "<http://example.org/people/MarioRossi> <http://example.org/properties/hasContact> _:ids ."},
-
-        {"role": "user", "content": "Mario Rossi has the profession of teacher."},
-        {"role": "assistant", "content": "<http://example.org/people/MarioRossi> <http://example.org/properties/hasProfession> \"teacher\" @en ."}
-    ]
-
-    prompt=create_prompt(
-        prompt_input="Giovanni Bianchi was born 30 years ago.",
-        system_prompt=system_prompt,
-        examples=examples
+    pars_table, map_tt = get_parsing_table_and_map_tt(
+        tokenizer, productions=productions, regex_dict=regex_dict,
     )
-
-    # Initialize tokenizer
-    model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
-
-    # Generate grammar parameters
-    pars_table, map_terminal_tokens = get_parsing_table_and_map_tt(
-        tokenizer, 
-        productions=productions, 
-        regex_dict=regex_dict,
-    )
-
-    LogitProcessor, Streamer = generate_grammar_parameters(tokenizer, pars_table, map_terminal_tokens)
-    output = generate_text(model, tokenizer, prompt, LogitProcessor, Streamer, chat_template)
-    print(output) # Example output: "<http://example.org/people/GiovanniBianchi><http://example.org/properties/hasAge>"30"^^<http://www.w3.org/2001/XMLSchema#integer>."
-  
+    pdas, streamer = generate_grammar_parameters(tokenizer, pars_table, map_tt)
+    result = generate_text(model, tokenizer, prompt, pdas, streamer)
+    print(result["text"])
+    # <http://example.org/people/GiovanniBianchi><http://example.org/properties/hasAge>"30"^^<http://www.w3.org/2001/XMLSchema#integer>.
 ```
+
+### 🧬 Pydantic → Grammar
+
+```python
+from typing import Literal, Optional
+from pydantic import BaseModel
+from grammarllm.utils.pydantic_to_grammar import pydantic_to_productions
+
+class Person(BaseModel):
+    name: Literal["mario", "luisa"]
+    mood: Optional[Literal["happy", "sad"]] = None
+
+productions, regex_dict = pydantic_to_productions(Person)
+pars_table, map_tt = get_parsing_table_and_map_tt(tokenizer, productions, regex_dict)
+# generated text is always valid JSON: {"name": "mario", "mood": null}
+```
+
+Output is strict JSON — `json.loads` and `Person.model_validate_json` always
+succeed. Design: [docs/superpowers/specs/2026-07-07-pydantic-json-grammar-design.md](docs/superpowers/specs/2026-07-07-pydantic-json-grammar-design.md).
 
 ---
 
@@ -379,8 +287,10 @@ Each key in regex_dict must follow the format 'regex_' + symbol_name, where symb
 
 ## ⚠️ Limitations
 
-* ❌ Beam search is **not supported**
-* You cannot define multiple <<exact_string>> in the same rule
+* Grammars must be **LL(1) after tag expansion** — non-LL(1) grammars are rejected at setup time with a diagnostic `Conflict:` error
+* No left recursion (`'A': ["A x"]`) — use right recursion (`'A': ["x A", "ε"]`)
+* The streamer (live token logging) is disabled with beam search (HF limitation); generation itself fully supports beams
+* Pydantic conversion emits strict JSON; no escape sequences in string content (no ", \ or control chars)
 
 ---
 
@@ -407,7 +317,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-## 🖌 Citation 
+## 🖌 Citation
 
 [![ACL 2025 Paper](https://img.shields.io/badge/ACL%202025-Paper-blue)](https://aclanthology.org/2025.findings-acl.177/)
 
@@ -429,8 +339,7 @@ If you use this work, please cite:
 
 ## 📫 Contact
 
-📧 Email:  
+📧 Email:
 [gabriele.tuccio@phd.unict.it](mailto:gabriele.tuccio@phd.unict.it)
 [luana.bulla@phd.unict.it](mailto:luana.bulla@phd.unict.it)
 [misael.mongiovi@unict.it](mailto:misael.mongiovi@unict.it)
-
