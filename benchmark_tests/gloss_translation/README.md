@@ -65,3 +65,28 @@ python metrics.py output/1b_la_greedy/predictions_1b_la_greedy.csv
 
 Runs checkpoint every 100 rows to `output/<name>/checkpoint.csv`; resume with
 `--start N --resume-csv output/<name>/checkpoint.csv`.
+
+## Results (2000 test rows, `do_sample=False`, lookahead on)
+
+Corpus BLEU / chrF, mean set-F1, Validity (share of rows whose every predicted
+gloss is in the 16121-gloss vocabulary). Gold column is `gloss_adj` (suffix
+form), written by `gloss_eval.py` when `grammar.gloss_form: suffix`.
+
+| model | decoding | BLEU | chrF | F1 | Validity |
+|---|---|---|---|---|---|
+| 1B | greedy | 57.45 | 83.31 | 0.855 | 100.0% |
+| 1B | beam3  | **65.15** | 88.01 | 0.907 | 99.8% |
+| 3B | greedy | 72.71 | 89.67 | 0.911 | 99.8% |
+| 3B | beam3  | **74.45** | 91.86 | 0.938 | 99.9% |
+| 8B | greedy | 81.67 | 93.19 | 0.942 | 100.0% |
+| 8B | beam3  | **84.39** | 94.61 | 0.956 | 100.0% |
+
+Beam3 adds **+7.7 / +1.7 / +2.7 BLEU** on 1B / 3B / 8B — largest by far on the
+smallest model, but not monotonic in scale (the 8B gain exceeds the 3B one).
+Validity never drops below 99.8%: the mask holds, and the few misses are rows
+where generation hit `max_new_tokens` mid-gloss.
+
+On the replication anchor: the 8B greedy run lands on the paper (81.67 vs
+0.81 BLEU), but **1B greedy is ~10 BLEU above it** (57.45 vs 0.47). The gain
+is unexplained by the intentional deviations alone and has not been chased
+down — treat the 1B paper comparison as unreplicated rather than beaten.

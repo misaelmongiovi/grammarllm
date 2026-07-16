@@ -21,7 +21,7 @@ icon: lucide/rocket
 
 - Python ≥ 3.10
 - Transformers ≥ 4.30.0
-- PyTorch or TensorFlow
+- PyTorch
 - A pre-trained causal language model (e.g. GPT-2, LLaMA, Qwen)
 
 ## Installation
