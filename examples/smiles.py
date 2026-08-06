@@ -7,53 +7,46 @@ Source: OpenSMILES specification, section 2.2 "Grammar"
 Coverage: the whole of section 2.2 — the 114 IUPAC element symbols, the 8
 aromatic symbols, the 10 organic-subset atoms, bracket-atom optional fields
 (isotope, chirality, hcount, charge, atom class), branches, dot
-disconnections, and ring closures in all four spec forms (bare `1`,
-two-digit `%12`, and both of those preceded by an explicit bond order,
-`=1` / `=%12`).
-
-The spec's EBNF is NOT transcribable rule-for-rule, because it is not
-LL(1) and grammarllm requires LL(1) after tag expansion (README,
-"Limitations"). The three places where this file's shape departs from the
-spec's, and why, are below. None of them lose coverage.
+disconnections, all seven bond orders including the quadruple bond `$`, and
+ring closures in all four spec forms (bare `1`, two-digit `%12`, and both of
+those preceded by an explicit bond order, `=1` / `=%12`).
 
 
-1. Ring-closure bonds: the spec's ambiguity, resolved by deferral
------------------------------------------------------------------
-The spec writes
+Why this file is not a rule-for-rule transcription
+---------------------------------------------------
+The spec's EBNF is not LL(1), and grammarllm needs LL(1) after tag
+expansion. The sticking point is the ring closure:
 
     ringbond      ::= bond? DIGIT | bond? '%' DIGIT DIGIT
     branched_atom ::= atom ringbond* branch*
     chain         ::= ... | chain bond branched_atom | ...
 
-Right after an atom, a bond symbol is therefore a valid lookahead for two
-different things at once: the start of a ring closure (`C=1...`) and the
-bond joining the next chain atom (`C=C`). Only the token AFTER the bond
-tells them apart (digit vs atom), so a literal transcription needs 2
-tokens of lookahead. Transcribed literally it fails immediately with
+Right after an atom, a bond symbol is a valid lookahead for two different
+things at once: the start of a ring closure (`C=1...`) and the bond joining
+the next chain atom (`C=C`). Only the token AFTER the bond tells them apart
+(digit vs atom), so one token of lookahead is not enough:
 
     Conflict: RINGBONDS -> - ['RINGBOND', 'RINGBONDS']!
     Regola attuale: - ['ε']!
 
-Note this is a FIRST/FOLLOW conflict (a nullable non-terminal whose FOLLOW
-set intersects its own FIRST set), not a FIRST/FIRST one. That matters:
-left-factoring — including grammarllm's built-in pass in
-grammar_generation.find_common_prefixes_in_productions — provably cannot
-fix FIRST/FOLLOW conflicts, only FIRST/FIRST ones of the form
-`A -> a X | a Y`. So no amount of automatic factoring resolves this; the
-grammar has to be reshaped.
+This is a FIRST/FOLLOW conflict — a nullable non-terminal whose FOLLOW set
+meets its own FIRST set — and the two competing alternatives live in
+different non-terminals, so no amount of left-factoring reaches them.
 
-(Two independent limits of that built-in pass are worth knowing anyway,
-since they bite elsewhere: it is *all-or-nothing* — it factors only a
-prefix shared by EVERY non-epsilon alternative, so the textbook case
-`A -> a X | a Y | b Z` is left untouched where standard left-factoring
-would group it into `A -> a A_FACT | b Z` — and it is *per-non-terminal*,
-so it can never restructure across two non-terminals, which is what this
-conflict spans.)
+Writing the spec's rule verbatim now works anyway: parsing_table() detects
+the conflict and rewrites the grammar automatically (see the "Riscrittura
+automatica in forma LL(1)" section of generate_LL1_parsing_table.py). This
+file nonetheless keeps the resolution written out by hand, for two reasons:
+the generated non-terminal names (`RINGBONDS_NT__C__C2`) are far harder to
+read in `temp/table_parsing.json` when debugging a grammar, and the
+automatic pass is a bounded semi-algorithm — no algorithm can LL(1)-ify
+every grammar, since not every deterministic language has an LL(1) grammar
+at all — so an explicit grammar is one less thing that can fail to
+converge.
 
-The fix is to defer the decision by one grammar level instead of trying to
-resolve it with one token: TAIL_NT consumes the bond and hands over to
-AFTER_BOND_NT, which then dispatches on the *next* token with no lookahead
-needed at all —
+The resolution is to defer the decision by one grammar level rather than
+resolve it with lookahead: TAIL_NT consumes the bond and hands over to
+AFTER_BOND_NT, which dispatches on the *next* token —
 
     TAIL_NT       -> ... | BOND_NT AFTER_BOND_NT | ...
     AFTER_BOND_NT -> digit TAIL_NT                 # it was a ring closure
@@ -64,7 +57,7 @@ The essential detail is that the chain-bond branch continues at the SAME
 stack level (`ATOM_NT TAIL_NT`). An earlier attempt handed off to a nested
 `BRANCHED_ATOM` instead, which left the outer atom's branch section
 stranded underneath on the stack — two live branch frames both accepting
-'(' — a real ambiguity, and it surfaced as
+'(' — a real ambiguity that surfaced as
 `Conflict: BRANCHES -> ( ['BRANCH','BRANCHES']! Regola attuale: ( ['ε']!`.
 
 Because the top-level chain ends at EOS while a branch-internal chain ends
@@ -75,31 +68,11 @@ BAFTER_BOND_NT/... for the latter.
 Per the spec's `atom ringbond* branch*`, ring closures may not follow a
 branch; the grammar enforces that (`C(F)1C` is rejected).
 
-
-2. The '$' bond: a name collision with an internal sentinel
-------------------------------------------------------------
-generate_LL1_parsing_table.follow() reserves the literal string "$" as its
-end-of-input marker during FIRST/FOLLOW construction. Writing the
-quadruple bond as the tag `<<$>>` makes the *grammar symbol itself* equal
-to "$", which collides and raises a Conflict as soon as FOLLOW propagation
-reaches it.
-
-So "$" is never allowed to become a grammar symbol name: BOND_NT's
-quadruple-bond alternative is the bare (non-`<<>>`) terminal `quadbond`,
-tied to the real "$" vocabulary token only later and elsewhere, by
-generate_token_maps() via the regex_dict entry `regex_quadbond`. Grammar
-construction never sees the character at all. Same idiom the README's RDF
-example uses for structural punctuation. This is specific to "$" — no
-other SMILES character collides with anything internal; the remaining bond
-symbols are ordinary `<<tag>>` terminals.
-
-
-3. Chirality: enumerated forms only
-------------------------------------
-The spec gives the same values twice — enumerated (`@TB1`..`@TB20`,
-`@OH1`..`@OH30`) and generalized (`'@TB' DIGIT DIGIT`). Keeping both would
-let e.g. "@TB10" derive two ways. Only the enumeration is kept; since it
-spans the spec's full ranges, nothing is lost.
+One genuine simplification of the spec: chirality keeps only the enumerated
+forms (`@TB1`..`@TB20`, `@OH1`..`@OH30`) and drops the generalized
+`'@TB' DIGIT DIGIT` spelling the spec also lists, which would let e.g.
+"@TB10" derive two different ways. The enumeration spans the spec's full
+ranges, so no value is lost.
 
 
 Two mechanisms worth knowing before editing this file
@@ -128,7 +101,9 @@ official EBNF included. "C1CC" (ring opened, never closed) parses here
 exactly as it would under the spec's own rules.
 
 Run:  uv run python examples/smiles.py
+      GRAMMARLLM_MODEL=/path/to/local/model uv run python examples/smiles.py
 """
+import os
 import re
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -141,9 +116,9 @@ from grammarllm import (
     create_prompt,
 )
 
-MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+MODEL = os.environ.get("GRAMMARLLM_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
 
-BOND_SYMBOLS = ['-', '=', '#', ':', '/', '\\']  # '$' handled as the 'quadbond' terminal
+BOND_SYMBOLS = ['-', '=', '#', '$', ':', '/', '\\']
 
 ALIPHATIC_ORGANIC_SYMBOLS = ['B', 'C', 'N', 'O', 'S', 'P', 'F', 'Cl', 'Br', 'I']
 AROMATIC_ORGANIC_SYMBOLS = ['b', 'c', 'n', 'o', 's', 'p']
@@ -264,8 +239,7 @@ def build_smiles_grammar():
         'NUMBER_NT': ["digit NUMBER_TAIL_NT"],
         'NUMBER_TAIL_NT': ["digit NUMBER_TAIL_NT", "ε"],
 
-        # '$' is a bare terminal, not a <<tag>> — see docstring section 2.
-        'BOND_NT': _tags(BOND_SYMBOLS) + ["quadbond"],
+        'BOND_NT': _tags(BOND_SYMBOLS),
         'DOT_NT': ["<<.>>"],
 
         'ALIPHATIC_ORGANIC_NT': _tags(ALIPHATIC_ORGANIC_SYMBOLS),
@@ -277,7 +251,6 @@ def build_smiles_grammar():
 
     regex_dict = {
         'regex_digit': re.compile(r'^[0-9]$'),
-        'regex_quadbond': re.compile(r'^\$$'),  # a token whose text is exactly "$"
     }
 
     return productions, regex_dict
