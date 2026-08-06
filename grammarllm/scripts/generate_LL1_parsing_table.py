@@ -413,7 +413,7 @@ def normalise_epsilon(grammar):
     }
 
 
-def find_conflicts(grammar, start_symbol="S*"):
+def find_conflicts(grammar, start_symbol="S*", first_sets=None, follow_sets=None):
     """
     Elenca le celle della parsing table con più di una produzione.
 
@@ -426,8 +426,10 @@ def find_conflicts(grammar, start_symbol="S*"):
     Usa gli stessi FIRST/FOLLOW di compute_parsing_table, così la diagnosi e
     la costruzione non possono divergere.
     """
-    first_sets = compute_all_first_sets(grammar)
-    follow_sets = follow(grammar, first_sets, start_symbol)
+    if first_sets is None:
+        first_sets = compute_all_first_sets(grammar)
+    if follow_sets is None:
+        follow_sets = follow(grammar, first_sets, start_symbol)
 
     out = []
     for nt, prods in grammar.items():
@@ -770,6 +772,18 @@ def parsing_table(final_rules):
     for (nt, _), rules in final_rules.items():
         grammar[nt].extend(rules)
 
+    # Una sola rappresentazione dell'epsilon da qui in poi.  process_full_grammar
+    # emette l'alternativa epsilon come ['ε'], mentre la tabella e il PDA usano
+    # [];  compute_all_first_sets accettava entrambe le forme con un ramo
+    # dedicato, ma compute_first_of_string trattava 'ε' come un terminale
+    # qualsiasi e dava la risposta giusta solo perché il marcatore coincide con
+    # il nome del simbolo.  Canonicalizzare qui rende quella coincidenza
+    # irrilevante ed elimina un 'ε' residuo dentro produzioni più lunghe, che
+    # sarebbe finito nella tabella e avrebbe fatto fallire il PDA come terminale
+    # inesistente.  Sulla costruzione della tabella è un no-op: ['ε'] e [] danno
+    # gli stessi FIRST, FOLLOW e celle.
+    grammar = normalise_epsilon(dict(grammar))
+
     def save_table_parsing_as_txt(table):
         """
         Serializza la parsing table in JSON leggibile per debug.
@@ -860,25 +874,24 @@ def parsing_table(final_rules):
     logging.info("\nFollow sets:\n")
     logging.info(follow_sets)
 
-    try:
-        table = compute_parsing_table(grammar, first_sets, follow_sets)
-    except ValueError:
-        # La grammatica non è LL(1) così com'è.  Prima di rifiutarla, prova a
-        # riscriverla preservando il linguaggio (vedi la sezione "Riscrittura
-        # automatica in forma LL(1)" sopra).  Si arriva qui solo su
-        # grammatiche che verrebbero comunque rifiutate: nessuna grammatica
-        # già funzionante cambia comportamento.
-        repaired = ll1ify(dict(grammar), 'S*')
-        if repaired is None:
-            raise            # non convergente: risale il conflitto originale
-        logging.info(
-            f"Grammatica riscritta in forma LL(1): "
-            f"{len(grammar)} → {len(repaired)} non-terminali."
-        )
-        grammar = repaired
-        first_sets = compute_all_first_sets(grammar)
-        follow_sets = follow(grammar, first_sets, 'S*')
-        table = compute_parsing_table(grammar, first_sets, follow_sets)
+    # La grammatica in ingresso può non essere LL(1): metterla in forma LL(1)
+    # è parte della costruzione della tabella, non una riparazione a
+    # posteriori.  Il controllo riusa i FIRST/FOLLOW già calcolati, quindi
+    # costa una sola passata sulle produzioni.
+    if find_conflicts(grammar, 'S*', first_sets, follow_sets):
+        repaired = ll1ify(grammar, 'S*')
+        if repaired is not None:
+            logging.info(
+                f"Grammatica messa in forma LL(1): "
+                f"{len(grammar)} → {len(repaired)} non-terminali."
+            )
+            grammar = repaired
+            first_sets = compute_all_first_sets(grammar)
+            follow_sets = follow(grammar, first_sets, 'S*')
+        # Se la riscrittura non converge la grammatica resta com'è e
+        # compute_parsing_table solleva il suo ValueError diagnostico.
+
+    table = compute_parsing_table(grammar, first_sets, follow_sets)
 
     save_table_parsing_as_txt(table)
 
