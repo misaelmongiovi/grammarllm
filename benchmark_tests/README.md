@@ -12,6 +12,13 @@ columns; `wos` additionally sweeps the few-shot count.
 | [`wos`](wos/README.md) | 2-level classification (`parent\|child`) | hierarchy productions | 7 parents × 145 distinct `parent\|child` paths | 2000 |
 | [`gloss_translation`](gloss_translation/README.md) | ASL gloss sequence | separator-nonterminal terminals | 16121 glosses (naturally closed) | 2000 |
 | [`conll_ner`](conll_ner/README.md) | 4-field JSON object | pydantic → enum grammar | 8804 entity spans (closed over all splits) | 2756 |
+| [`smiles_qed`](smiles_qed/README.md) | SMILES molecule | full OpenSMILES §2.2 grammar | open (recursive, not an enum) | 2000 |
+
+`smiles_qed` differs from the other three in kind: its output space is open
+and recursive rather than a closed label set, and the property that decides
+success (ring-closure pairing, valence) is context-sensitive, so no CFG can
+enforce it. It is the one task here where the grammar is not what separates a
+good run from a bad one — search is. Run on Llama-3.2-1B-Instruct only.
 
 Models: Llama-3.2-1B-Instruct, Llama-3.2-3B-Instruct, Meta-Llama-3-8B-Instruct.
 All runs use the native chat template and the token-lookahead engine (LA).
@@ -117,6 +124,34 @@ whose every predicted gloss is in the vocabulary).
 | 8B | beam3+LA  | **84.39** | 94.61 | 0.956 | 100.0% |
 
 Beam3 adds +7.7 / +1.7 / +2.7 BLEU on 1B / 3B / 8B.
+
+### smiles_qed — drug-like molecule generation (SMILES → QED)
+
+→ setup and usage: [`smiles_qed/README.md`](smiles_qed/README.md)
+
+2000 rows, Llama-3.2-1B-Instruct, 20 fixed few-shot examples, full OpenSMILES
+grammar. `yield` = share of all rows giving a molecule that is both
+RDKit-valid and drug-like (QED >= 0.5); it is the metric to compare on,
+because mean QED averages over each run's own valid subset.
+
+| run | grammar | RDKit valid | QED | uniq | **yield** |
+|---|---|---|---|---|---|
+| greedy + grammar | **0.990** | 0.192 | 0.800 | **0.162** | 0.180 |
+| beam3 + grammar | 0.738 | **0.683** | 0.573 | 0.103 | **0.451** |
+| greedy, no grammar | — | 0.186 | 0.804 | 0.155 | 0.176 |
+| beam3, no grammar | — | 0.657 | 0.577 | 0.099 | 0.436 |
+
+Gold test-set mean QED: 0.653. **Beam3 gives 2.5× the yield of greedy**
+(0.451 vs 0.180) off 3.6× the chemical validity. Greedy's higher mean QED is
+an artefact of averaging over the 19% of rows it got right.
+
+Unlike the other three tasks, the grammar is *not* what decides the outcome
+here: the unconstrained baseline reaches nearly the same validity (0.186 /
+0.657), because the failure that dominates — unpaired ring-closure digits,
+~89% of invalid outputs — is context-sensitive and outside what any CFG can
+state. What the grammar guarantees is the output *shape*: both unconstrained
+runs contain rows answered in prose ("I can't provide a SMILES string…"),
+both constrained runs contain zero.
 
 ### conll_ner — CoNLL-2003 NER → JSON
 
