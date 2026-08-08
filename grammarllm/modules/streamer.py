@@ -194,16 +194,28 @@ class BaseStreamer:
         Chiamata automaticamente da model.generate() al completamento.
         Esegue due operazioni:
 
-        1. Verifica di consistenza: controlla che tutti i PDA abbiano la pila
-           vuota (eos() == True). Se uno non lo è, emette un warning — indica
-           che la grammatica non è stata consumata completamente, possibilmente
-           perché la generazione è stata interrotta da max_new_tokens prima
-           che l'EOS token fosse generato.
+        Reset: imposta is_first_call=True e chiama pda.reset() su tutti i
+        PDA, riportandoli allo stato iniziale (stack = [startSymbol]).
+        Questo permette di riusare gli stessi oggetti nella prossima
+        chiamata a generate_text() senza reinstanziarli.
 
-        2. Reset: imposta is_first_call=True e chiama pda.reset() su tutti i
-           PDA, riportandoli allo stato iniziale (stack = [startSymbol]).
-           Questo permette di riusare gli stessi oggetti nella prossima
-           chiamata a generate_text() senza reinstanziarli.
+        Dov'e' finita la verifica di consistenza (BUG FIX)
+        ---------------------------------------------------
+        Qui c'era un controllo `if not pda.eos(): logging.warning(...)`.  Era
+        strutturalmente falso: ispezionava self.pdas, che put() non avanza mai
+        ("STATE UPDATE DISABLED", vedi sopra) da quando lo stato e' gestito da
+        StatelessLogitsProcessor via re-simulation.  Quei PDA restano a ['S*']
+        per tutta la generazione, quindi il warning si accendeva SEMPRE — anche
+        sulle righe perfettamente valide — e non poteva distinguere un
+        fallimento vero dal caso normale.  In piu' lo streamer non e' nemmeno
+        nel giro con beam search: HF non lo supporta per num_beams > 1 e
+        generate_text() lo passa solo in greedy.
+
+        L'avviso non e' stato rimosso, e' stato spostato dove lo stato reale e'
+        noto: generate_text(), subito dopo aver ricostruito `pda_stack` con
+        StatelessLogitsProcessor.get_pda_for_sequence().  Li' segnala solo i
+        casi veri (verificato: 0 falsi allarmi su generazioni valide, 5/5 su un
+        troncamento forzato a max_new_tokens).
 
         Nota sull'integrazione con StatelessLogitsProcessor
         ----------------------------------------------------
@@ -213,19 +225,6 @@ class BaseStreamer:
         prima della generazione. I due reset sono quindi indipendenti.
         """
         logging.info("=== Fine generazione ===")
-
-        all_empty = True
-        for i, pda in enumerate(self.pdas):
-            if not pda.eos():
-                logging.warning(
-                    f"⚠ Generazione terminata ma stack PDA {i} non vuoto: "
-                    f"{pda.stack[::-1]}. Resetting PDA to ensure clean state "
-                    f"for next generation."
-                )
-                all_empty = False
-
-        if all_empty:
-            logging.info("✓ Tutti gli stack PDA correttamente vuoti")
 
         self.is_first_call = True
         for pda in self.pdas:
