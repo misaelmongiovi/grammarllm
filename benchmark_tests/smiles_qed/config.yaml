@@ -1,0 +1,19 @@
+model:
+  name: "/home/stlab/models/Llama-3.2-1B-Instruct"
+  device: "cuda"
+  token_lookahead: true
+  num_beams: 1            # overridden per run: 1 (greedy) or 3 (beam3)
+  do_sample: false
+  top_p: 1.0
+  max_new_tokens: 100
+  batch_size: 5
+
+paths:
+  test_data: "data/test_2000.jsonl"
+  few_shot: "data/few_shot_20.jsonl"
+  # actual predictions land in output/<run_name>/, e.g. output/greedy/,
+  # output/beam3/ — run_name defaults to f"beam{num_beams}" (pipe_bench.py)
+  output_dir: "output"
+
+run:
+  checkpoint_every: 200
