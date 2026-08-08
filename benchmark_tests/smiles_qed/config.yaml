@@ -8,11 +8,17 @@ model:
   max_new_tokens: 100
   batch_size: 5
 
+# 'pubchem' (jablonkagroup/pubchem-smiles-molecular-formula) or 'gdb17'
+# (Pixelatory/GDB-17, the paper's dataset). Both are built by prepare_data.py
+# into data/<dataset>/ with the same schema. Override with --dataset.
+dataset: pubchem
+
 paths:
-  test_data: "data/test_2000.jsonl"
-  few_shot: "data/few_shot_20.jsonl"
-  # actual predictions land in output/<run_name>/, e.g. output/greedy/,
-  # output/beam3/ — run_name defaults to f"beam{num_beams}" (pipe_bench.py)
+  # resolved as data/<dataset>/<file>
+  test_data: "test_2000.jsonl"
+  few_shot: "few_shot_20.jsonl"
+  # predictions land in output/<dataset>/<run_name>/, run_name defaulting
+  # to f"beam{num_beams}"
   output_dir: "output"
 
 run:

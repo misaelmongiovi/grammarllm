@@ -81,6 +81,10 @@ def main():
                         "defaults to beam{num_beams}")
     parser.add_argument("--model", default=None, help="Override model path")
     parser.add_argument("--num-beams", type=int, default=None, help="Override num_beams")
+    parser.add_argument("--dataset", default=None,
+                        help="Override cfg.dataset: 'pubchem' or 'gdb17'")
+    parser.add_argument("--batch", type=int, default=None,
+                        help="Override cfg.model.batch_size")
     parser.add_argument("--no-lookahead", action="store_true",
                         help="Disable the token-lookahead engine (A/B baseline)")
     parser.add_argument("--limit", type=int, default=None, help="Process only first N rows")
@@ -94,12 +98,13 @@ def main():
     num_beams = args.num_beams if args.num_beams is not None else cfg.model.num_beams
     token_lookahead = (not args.no_lookahead) and bool(cfg.model.token_lookahead)
     run_name = args.name or f"beam{num_beams}"
+    dataset = args.dataset or cfg.dataset
 
-    out_dir = SCRIPT_DIR / cfg.paths.output_dir / run_name
+    out_dir = SCRIPT_DIR / cfg.paths.output_dir / dataset / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(log_dir=str(out_dir / "temp"))
-    logging.info(f"Run '{run_name}': model={model_path} beams={num_beams} "
-                 f"lookahead={token_lookahead}")
+    logging.info(f"Run '{run_name}': dataset={dataset} model={model_path} "
+                 f"beams={num_beams} lookahead={token_lookahead}")
 
     device = cfg.model.device if torch.cuda.is_available() else "cpu"
 
@@ -117,17 +122,18 @@ def main():
     pars_tab, map_tt = get_parsing_table_and_map_tt(tokenizer, productions, regex_dict=regex_dict)
     print(f"Grammar ready in {time.time() - t0:.1f}s")
 
-    few_shot = load_jsonl(SCRIPT_DIR / cfg.paths.few_shot)
-    test_rows = load_jsonl(SCRIPT_DIR / cfg.paths.test_data)
+    data_dir = SCRIPT_DIR / "data" / dataset
+    few_shot = load_jsonl(data_dir / cfg.paths.few_shot)
+    test_rows = load_jsonl(data_dir / cfg.paths.test_data)
     if args.start > 0:
         test_rows = test_rows[args.start:]
     if args.limit is not None:
         test_rows = test_rows[: args.limit]
-    print(f"Processing {len(test_rows)} test rows (batch={cfg.model.batch_size}).")
+    batch_size = int(args.batch if args.batch is not None else cfg.model.batch_size)
+    print(f"Processing {len(test_rows)} {dataset} rows (batch={batch_size}).")
 
     predictions = []
     checkpoint_path = out_dir / "checkpoint.csv"
-    batch_size = int(cfg.model.batch_size)
 
     for i in tqdm(range(0, len(test_rows), batch_size), desc="Inference"):
         batch = test_rows[i:i + batch_size]
