@@ -91,6 +91,7 @@ class ProductionRuleProcessor:
         self.tokenizer = tokenizer  # Tokenizer di Hugging Face
         self.non_terminals = set()  # Traccia tutti i non terminali
         self.rule_specific_grammars = {}  # Grammatiche specifiche per ogni regola
+        self.generated_nts = set()  # NT ausiliari creati dalla fattorizzazione
     
     def extract_tags_and_others(self, rhs_list):
         """
@@ -545,131 +546,125 @@ class ProductionRuleProcessor:
         self.rule_specific_grammars[rule_name] = grammar
         return grammar
     
-    def find_common_prefixes_in_productions(self, productions):
+    @staticmethod
+    def _longest_common_prefix(productions):
+        """Il prefisso più lungo condiviso da TUTTE le produzioni date."""
+        prefix = []
+        for i in range(min(len(p) for p in productions)):
+            column = {p[i] for p in productions}
+            if len(column) != 1:
+                break
+            prefix.append(productions[0][i])
+        return prefix
+
+    def _fresh_nt(self, base):
+        """Nome per un NT ausiliario che non collide con nulla già in uso."""
+        name, n = base, 1
+        while name in self.non_terminals or name in self.generated_nts:
+            n += 1
+            name = f"{base}{n}"
+        self.generated_nts.add(name)
+        return name
+
+    def left_factor_productions(self, lhs, productions):
         """
-        Applica left-factorization alle produzioni finali di un NT.
+        Fattorizza a sinistra le alternative di un non-terminale, PER GRUPPO.
 
-        Cerca un prefisso comune tra tutte le produzioni non-epsilon.
-        Se esiste, crea la struttura per la fattorizzazione:
-            A → prefisso A_FACT  (più eventuali epsilon residue)
-            A_FACT → suffisso1 | suffisso2 | ...
+        Raggruppa le alternative per primo simbolo e fattorizza ogni gruppo
+        di due o più elementi usando il prefisso comune PIÙ LUNGO di quel
+        gruppo, ricorrendo poi sui suffissi rimasti (che a loro volta
+        possono condividere un prefisso più corto in un sotto-gruppo):
 
-        Trattamento delle epsilon (fix critico)
-        ----------------------------------------
-        Le epsilon-produzioni indipendenti (prod = []) non partecipano al
-        calcolo del prefisso comune (per la proprietà LL(1), il loro
-        lookahead ∈ FOLLOW(A) è disgiunto da FIRST delle produzioni
-        non-epsilon). Vengono invece mantenute come produzioni residue
-        di A, non delegate ad A_FACT.
+            A -> a b X | a b Y | a c Z | d W
+              => A           -> a A_FACT | d W
+                 A_FACT      -> b A_FACT_FACT | c Z
+                 A_FACT_FACT -> X | Y
 
-        Esempio corretto
-        ----------------
-        Productions: [['x', 'B'], ['x'], []]
-          common_prefix = ['x']
-          suffixes = [['B'], []]   ← ['x'] strip → [], ['x','B'] strip → ['B']
-          new_productions = [[]]   ← epsilon rimane su A
-          Result:
-            A → 'x' A_FACT | ε
-            A_FACT → B | ε
+        BUG FIX (fattorizzazione tutto-o-niente)
+        -----------------------------------------
+        L'implementazione precedente calcolava UN solo prefisso comune a
+        TUTTE le alternative non-epsilon e rinunciava se anche una sola non
+        lo condivideva.  Il caso da manuale `A -> a X | a Y | b Z` restava
+        quindi intatto e il costruttore della parsing table rifiutava una
+        grammatica banalmente LL(1)-izzabile:
 
-        Integrazione
+            Conflict: S* → a ['a', 'X_NT']!
+            Regola attuale: a ['a', 'Y_NT']!
+
+        Trattamento delle epsilon (invariato, ed essenziale)
+        -----------------------------------------------------
+        Una epsilon INDIPENDENTE (prod == []) non partecipa mai al calcolo
+        del prefisso e resta sul padre.  Il suo lookahead è FOLLOW(A), che
+        per la proprietà LL(1) è disgiunto dai FIRST delle alternative
+        prefissate: non può condividere il prefisso.
+
+            A -> 'x' B | 'x' | ε
+              => A      -> 'x' A_FACT | ε
+                 A_FACT -> B | ε      ← questa ε nasce dallo strip di 'x',
+                                        è cosa diversa dalla ε propria di A
+
+        Terminazione
         ------------
-        Chiamata da process_full_grammar() passo 4 dopo aver assemblato
-        le produzioni finali di ogni lhs. Il risultato viene usato per
-        decidere se applicare la fattorizzazione o usare le produzioni così.
+        Il prefisso di un gruppo fattorizzato è lungo almeno un simbolo (il
+        gruppo è formato proprio sul primo simbolo condiviso), quindi ogni
+        chiamata ricorsiva lavora su produzioni strettamente più corte.
 
-        Returns
+        Parametri
+        ---------
+        lhs : str
+            Non-terminale da fattorizzare; i NT ausiliari prendono il nome
+            da lui.
+        productions : list[list[str]]
+            Le sue alternative.  Accetta anche la vecchia forma a stringa
+            ("ε" oppure "a b c").
+
+        Ritorna
         -------
-        tuple[list, dict]
-            (new_productions, factorization_info) dove:
-            - new_productions: produzioni residue (tipicamente epsilon)
-            - factorization_info: {'common_prefix': [...], 'suffixes': [...]}
-              oppure {} se nessuna fattorizzazione è necessaria
+        tuple[list[list[str]], dict[str, list[list[str]]]]
+            (produzioni da tenere su lhs, {NT ausiliario: sue produzioni}).
+
+        Collegamento
+        ------------
+        Chiamata da process_full_grammar() al passo 4.  Le regole ausiliarie
+        restituite vengono inserite in final_grammar accanto a quella di lhs.
         """
-        if len(productions) <= 1:
-            return productions, {}
-        
-        # Le produzioni sono già liste di token, non stringhe
-        splitted_productions = []
+        # Normalizza e rimuove i duplicati: un'alternativa ripetuta si
+        # ridurrebbe a una epsilon ripetuta dentro il NT ausiliario, che il
+        # costruttore della parsing table segnala come conflitto spurio.
+        normalised = []
         for prod in productions:
             if isinstance(prod, list):
-                if len(prod) == 0:
-                    splitted_productions.append([])  # Produzione vuota (epsilon)
-                else:
-                    splitted_productions.append(prod)
+                p = list(prod)
+            elif prod == "ε":
+                p = []
             else:
-                # Fallback per stringhe (se ancora presenti)
-                if prod == "ε":
-                    splitted_productions.append([])
-                else:
-                    splitted_productions.append(prod.split())
+                p = prod.split()
+            if p not in normalised:
+                normalised.append(p)
 
-        common_prefix = []
-        if splitted_productions:
-            # Considera solo le produzioni non vuote per il calcolo del prefisso
-            non_empty_productions = [prod for prod in splitted_productions if len(prod) > 0 and prod != ["ε"]]
+        epsilons = [p for p in normalised if not p]
+        groups = {}
+        for p in normalised:
+            if p:
+                groups.setdefault(p[0], []).append(p)
 
-            if len(non_empty_productions) > 1:  # Serve almeno 2 produzioni non vuote
-                min_len = min(len(prod) for prod in non_empty_productions)
-                
-                for i in range(min_len):
-                    tokens_at_pos = [prod[i] for prod in non_empty_productions]
-                    if len(set(tokens_at_pos)) == 1:
-                        common_prefix.append(tokens_at_pos[0])
-                    else:
-                        break
-        
-        if len(common_prefix) == 0:
-            return productions, {}
-        
-        # Crea le nuove produzioni rimuovendo il prefisso comune.
-        #
-        # Tre casi distinti:
-        #
-        #   prod = []  → epsilon INDIPENDENTE (es. A → ε).
-        #     Il suo lookahead è FOLLOW(A), che per la proprietà LL(1) è
-        #     DISGIUNTO da FIRST delle produzioni con prefisso comune.
-        #     L'epsilon NON può condividere il prefisso, quindi rimane su A
-        #     come produzione residua, NON scende in A_FACT.
-        #     Esempio:
-        #       A → 'x' B | 'x' | ε
-        #       fattorizzazione corretta: A → 'x' A_FACT | ε
-        #                                A_FACT → B | ε   ← ε qui è suffisso di 'x', non l'epsilon originale
-        #
-        #   prod = common_prefix  → produzione che coincide ESATTAMENTE con il prefisso (es. A → 'x').
-        #     Il suffisso è [] (lista vuota), che in A_FACT significa "deriva la stringa vuota".
-        #     Questo ε è LEGITTIMO in A_FACT perché nasce dallo strip del prefisso.
-        #
-        #   len(prod) > len(common_prefix) → caso normale, suffisso non vuoto.
-        #
-        new_productions = []
-        suffixes = []
-        factorization_info = {}
+        main, extra = [], {}
+        for group in groups.values():
+            if len(group) == 1:
+                main.append(group[0])
+                continue
 
-        for i, prod in enumerate(splitted_productions):
-            if len(prod) == 0:
-                # Epsilon indipendente: rimane come produzione residua di A.
-                # Non va in A_FACT perché il suo lookahead ∈ FOLLOW(A) è
-                # disgiunto dal prefisso comune per la proprietà LL(1).
-                new_productions.append([])
-            elif len(prod) >= len(common_prefix):
-                # Produzione che inizia col prefisso comune: calcola il suffisso.
-                # Se prod == common_prefix il suffisso è [], che è corretto in A_FACT
-                # (significa che da A_FACT si deriva epsilon, lookahead = FOLLOW(A_FACT)).
-                suffix = prod[len(common_prefix):]
-                suffixes.append(suffix)
-            else:
-                # Produzione più corta del prefisso comune: non dovrebbe mai accadere
-                # se common_prefix è calcolato solo su non-empty, ma gestiamo il caso.
-                new_productions.append(productions[i])
-        
-        if suffixes:
-            factorization_info = {
-                'common_prefix': common_prefix,
-                'suffixes': suffixes
-            }
-        
-        return new_productions, factorization_info
+            new_nt = self._fresh_nt(f"{lhs}_FACT")
+            prefix = self._longest_common_prefix(group)
+            suffixes = [p[len(prefix):] for p in group]
+
+            main.append(prefix + [new_nt])
+            sub_main, sub_extra = self.left_factor_productions(new_nt, suffixes)
+            extra[new_nt] = sub_main
+            extra.update(sub_extra)
+
+        main.extend(epsilons)
+        return main, extra
 
 
     def create_final_productions_for_rule(self, lhs, ordered_elements_list, rule_specific_tag_grammar):
@@ -774,6 +769,10 @@ class ProductionRuleProcessor:
         logging.info(f"Regole originali: {grammar_dict}")
 
         self.non_terminals = set(grammar_dict.keys())
+        # Azzerato ad ogni grammatica: i nomi dei NT ausiliari devono
+        # dipendere solo dalla grammatica in ingresso, non da quante volte
+        # il processore è già stato riusato.
+        self.generated_nts = set()
         logging.info(f"Non terminali identificati: {self.non_terminals}")
 
         final_grammar = {}
@@ -895,19 +894,18 @@ class ProductionRuleProcessor:
                     logging.info(f"  {lhs} -> []")
 
             # ── Passo 4: fattorizzazione dei prefissi comuni ──────────────
-            factorized_productions, factorization_info = self.find_common_prefixes_in_productions(productions)
+            # Per gruppo (alternative con lo stesso primo simbolo) e
+            # ricorsiva: vedi left_factor_productions per il bug fix.
+            factored, helper_rules = self.left_factor_productions(lhs, productions)
 
-            if factorization_info:
-                new_nt = f"{lhs}_FACT"
+            if helper_rules:
                 logging.info(f"\n=== FATTORIZZAZIONE PER {lhs} ===")
-                logging.info(f"Prefisso comune: {factorization_info['common_prefix']}")
-                logging.info(f"Suffissi: {factorization_info['suffixes']}")
+                for helper_nt, helper_prods in helper_rules.items():
+                    logging.info(f"  {helper_nt} -> {helper_prods}")
 
-                main_production = factorization_info['common_prefix'] + [new_nt]
-                final_grammar[(lhs, "RULE")] = [main_production] + factorized_productions
-                final_grammar[(new_nt, "RULE")] = factorization_info['suffixes']
-            else:
-                final_grammar[(lhs, "RULE")] = productions
+            final_grammar[(lhs, "RULE")] = factored
+            for helper_nt, helper_prods in helper_rules.items():
+                final_grammar[(helper_nt, "RULE")] = helper_prods
 
         self.save_final_grammar(final_grammar)
         return final_grammar, self.tag_to_nt_mapping

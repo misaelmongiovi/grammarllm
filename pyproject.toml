@@ -30,6 +30,10 @@ classifiers = [
 
 [project.optional-dependencies]
 analysis = ["matplotlib"]
+rl = [
+  "trl>=1.8,<2",
+  "peft>=0.11",
+]
 # Only for reproducing benchmark_tests/ — not needed to use the library.
 bench = [
     "accelerate>=0.26.0",   # device_map sharding in wos/pipe_bench.py
@@ -38,6 +42,7 @@ bench = [
     "pandas",
     "pyarrow",              # parquet engine for the retrieval pools
     "python-dotenv",        # wos/wos_eval.py
+    "rdkit",                # smiles_qed/QED scoring
     "sacrebleu",            # gloss BLEU/chrF
     "scikit-learn",         # wos F1 scoring
     "sentence-transformers",# mxbai retrieval encoder

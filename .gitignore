@@ -22,6 +22,12 @@ test_scripts/
 !/benchmark_tests/conll_ner/
 !/benchmark_tests/gloss_translation/
 !/benchmark_tests/wos/
+!/benchmark_tests/smiles_qed/
+# smiles_qed ships code only: its predictions run to ~300 MB, and both the
+# test set and the few-shot pool are regenerated bit-for-bit by
+# prepare_data.py (fixed seed, fixed source shard).
+/benchmark_tests/smiles_qed/output/
+/benchmark_tests/smiles_qed/data/
 /benchmark_tests/*/data/*.parquet
 /benchmark_tests/**/temp/
 /benchmark_tests/**/logs/
