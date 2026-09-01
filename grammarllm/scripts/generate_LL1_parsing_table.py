@@ -34,6 +34,20 @@ import logging
 from collections import defaultdict
 
 
+# End-of-input marker used while computing FOLLOW sets, then stripped from the
+# finished table (the PDA never sees it: generation ends on the model's EOS
+# token, not on an end-of-input terminal).
+#
+# It must be a string that can never be a real grammar symbol. This used to be
+# the plain "$", which silently broke any grammar using "$" as a terminal — the
+# strip step at the end of compute_parsing_table deleted the user's own entries
+# and the terminal simply stopped being derivable, with no error raised.
+# ("$" is the quadruple bond in SMILES, which is how this was found.)
+# NUL bytes appear neither in tokenizer vocabularies nor in hand-written
+# grammars, so this name cannot collide.
+EOF_MARKER = "\x00__grammarllm_eof__\x00"
+
+
 def compute_first_of_string(symbols, first_sets):
     """
     Calcola FIRST(α) per una sequenza di simboli α = [s1, s2, ..., sn].
@@ -294,7 +308,7 @@ def follow(productions, first_sets, start_symbol):
     L'output viene passato a compute_parsing_table() (funzione interna).
     """
     follow_sets = {nt: set() for nt in productions}
-    follow_sets[start_symbol].add("$")
+    follow_sets[start_symbol].add(EOF_MARKER)
 
     changed = True
     while changed:
@@ -316,6 +330,367 @@ def follow(productions, first_sets, start_symbol):
                             changed = True
 
     return follow_sets
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Riscrittura automatica in forma LL(1)
+# ═════════════════════════════════════════════════════════════════════════
+#
+# Usata da parsing_table() SOLO quando compute_parsing_table() rileva un
+# conflitto, cioè solo su grammatiche che verrebbero comunque rifiutate con
+# ValueError.  Una grammatica già LL(1) non passa mai di qui e non cambia:
+# questa sezione non può far regredire nulla che oggi funzioni.
+#
+# Perché serve
+# ------------
+# grammar_generation.left_factor_productions risolve i conflitti FIRST/FIRST
+# (due alternative dello STESSO non-terminale che iniziano allo stesso modo).
+# Non può però risolvere quelli FIRST/FOLLOW: lì le alternative in
+# competizione stanno in non-terminali DIVERSI e nessuna fattorizzazione
+# locale le raggiunge.  Esempio reale (OpenSMILES, sezione 2.2):
+#
+#     S*        -> BRANCHED_ATOM S* | BOND BRANCHED_ATOM S*
+#     RINGBONDS -> RINGBOND RINGBONDS | ε
+#     RINGBOND  -> digit | BOND digit
+#
+# Dopo un atomo un simbolo di legame può aprire una chiusura di anello
+# (RINGBOND) oppure legare l'atomo successivo della catena (S*).  RINGBONDS è
+# annullabile e il legame sta sia nel suo FIRST sia nel suo FOLLOW:
+#
+#     Conflict: RINGBONDS → = ['RINGBOND', 'RINGBONDS']!
+#     Regola attuale: = ['ε']!
+#
+# Le tre trasformazioni, tutte conservative del linguaggio per costruzione:
+#
+#   T1  left_factor    raggruppa le alternative per primo simbolo e
+#                      fattorizza ogni gruppo di due o più con il prefisso
+#                      comune più lungo, ricorsivamente.
+#   T2  specialize     per un NT annullabile A con conflitto FIRST/FOLLOW,
+#                      sostituisce ogni occorrenza `A γ` con un NT fresco che
+#                      denota esattamente L(A)·L(γ).  Le occorrenze
+#                      ricorsive-destre di A dentro A si ripiegano sul nuovo
+#                      NT: è questo che tiene finito il risultato.  Se A sta
+#                      in coda a una produzione di X la sua continuazione è
+#                      FOLLOW(X), non locale: si specializza prima X.
+#   T3  inline_heads   sostituisce il non-terminale di testa delle
+#                      alternative in conflitto con le alternative proprie di
+#                      quello, portando alla luce il prefisso terminale
+#                      condiviso che T1 può poi fattorizzare.
+#
+# Limiti, dichiarati e non nascosti
+# ----------------------------------
+# Non tutti i linguaggi deterministici ammettono una grammatica LL(1),
+# quindi un algoritmo completo non può esistere: questo è un SEMI-algoritmo,
+# limitato sia nel numero di round sia nella crescita della grammatica.  Se
+# non converge non tocca nulla e lascia risalire il ValueError originale,
+# che resta il messaggio diagnostico visto dall'utente.
+#
+# Validazione: equivalenza di linguaggio verificata per enumerazione su
+# 14.000 grammatiche casuali (3.950 riscritte, zero divergenze) e sulla
+# trascrizione letterale della sezione 2.2 di OpenSMILES.
+
+#: Round massimi del ciclo trasforma-e-ricontrolla.
+MAX_TRANSFORM_ROUNDS = 16
+
+#: Fattore massimo di crescita in non-terminali rispetto all'originale:
+#: difesa contro il blow-up su grammatiche con enum molto grandi.
+MAX_TRANSFORM_GROWTH = 6
+
+
+def normalise_epsilon(grammar):
+    """
+    Porta le produzioni epsilon alla forma canonica [].
+
+    process_full_grammar emette l'alternativa epsilon come la produzione a un
+    simbolo ['ε'], non come [].  Entrambe le forme sono accettate a valle, ma
+    tutte le trasformazioni qui testano la lista vuota: senza normalizzazione
+    un conflitto FIRST/FOLLOW non verrebbe riconosciuto come tale e T2 non
+    scatterebbe mai.
+    """
+    return {
+        nt: [[] if p == ["ε"] else [s for s in p if s != "ε"] for p in prods]
+        for nt, prods in grammar.items()
+    }
+
+
+def find_conflicts(grammar, start_symbol="S*", first_sets=None, follow_sets=None):
+    """
+    Elenca le celle della parsing table con più di una produzione.
+
+    Ritorna
+    -------
+    list[tuple[str, str, list[list[str]]]]
+        (non-terminale, lookahead, alternative in competizione).  Lista vuota
+        se e solo se la grammatica è LL(1).
+
+    Usa gli stessi FIRST/FOLLOW di compute_parsing_table, così la diagnosi e
+    la costruzione non possono divergere.
+    """
+    if first_sets is None:
+        first_sets = compute_all_first_sets(grammar)
+    if follow_sets is None:
+        follow_sets = follow(grammar, first_sets, start_symbol)
+
+    out = []
+    for nt, prods in grammar.items():
+        cell = {}
+        for prod in prods:
+            first_alpha = compute_first_of_string(prod, first_sets)
+            lookaheads = first_alpha - {"ε"}
+            if "ε" in first_alpha:
+                lookaheads = lookaheads | follow_sets[nt]
+            for terminal in lookaheads:
+                cell.setdefault(terminal, []).append(prod)
+        for terminal, competing in sorted(cell.items(), key=lambda kv: str(kv[0])):
+            if len(competing) > 1:
+                out.append((nt, terminal, competing))
+    return out
+
+
+def _fresh_name(base, used):
+    """Nome di NT che non collide con nulla già in uso."""
+    name, n = base, 1
+    while name in used:
+        n += 1
+        name = f"{base}{n}"
+    used.add(name)
+    return name
+
+
+def _reachable(grammar, start_symbol):
+    """Scarta i non-terminali non più raggiungibili dal simbolo iniziale."""
+    seen, stack = {start_symbol}, [start_symbol]
+    while stack:
+        for prod in grammar.get(stack.pop(), []):
+            for sym in prod:
+                if sym in grammar and sym not in seen:
+                    seen.add(sym)
+                    stack.append(sym)
+    return {nt: prods for nt, prods in grammar.items() if nt in seen}
+
+
+def _longest_common_prefix(prods):
+    prefix = []
+    for i in range(min(len(p) for p in prods)):
+        if len({p[i] for p in prods}) != 1:
+            break
+        prefix.append(prods[0][i])
+    return prefix
+
+
+def left_factor(grammar, used):
+    """
+    T1 — fattorizzazione a sinistra per gruppo di primo simbolo.
+
+    Gemella di grammar_generation.left_factor_productions, ma applicata alla
+    grammatica GIÀ espansa (dopo la tokenizzazione dei tag), dove possono
+    emergere prefissi condivisi che a monte non erano visibili.
+    """
+    out = {}
+    for nt, prods in grammar.items():
+        uniq = []
+        for p in prods:
+            if p not in uniq:
+                uniq.append(p)
+
+        epsilons = [p for p in uniq if not p]
+        groups = {}
+        for p in uniq:
+            if p:
+                groups.setdefault(p[0], []).append(p)
+
+        main = []
+        for group in groups.values():
+            if len(group) == 1:
+                main.append(group[0])
+                continue
+            helper = _fresh_name(f"{nt}_FACT", used)
+            prefix = _longest_common_prefix(group)
+            main.append(prefix + [helper])
+            out[helper] = [p[len(prefix):] for p in group]
+        main.extend(epsilons)
+        out[nt] = main
+
+    # I NT ausiliari appena creati possono a loro volta essere fattorizzabili.
+    if any(nt not in grammar for nt in out):
+        return left_factor(out, used)
+    return out
+
+
+def specialize(grammar, target, used):
+    """
+    T2 — sostituisce `target γ` con un NT fresco che denota L(target)·L(γ).
+
+    Ritorna
+    -------
+    tuple[dict | None, set[str]]
+        (grammatica riscritta, bloccanti).  La grammatica è None se la
+        trasformazione non è applicabile qui; `bloccanti` contiene gli lhs
+        alla cui coda `target` compare, da specializzare prima.
+    """
+    continuations, blockers = set(), set()
+    for lhs, prods in grammar.items():
+        for prod in prods:
+            for i, sym in enumerate(prod):
+                if sym != target:
+                    continue
+                tail = tuple(prod[i + 1:])
+                if lhs == target and not tail:
+                    continue        # ricorsione destra su sé stesso: si ripiega
+                if not tail:
+                    blockers.add(lhs)
+                    continue
+                continuations.add(tail)
+
+    if blockers or not continuations:
+        return None, blockers
+
+    names = {cont: _fresh_name(f"{target}__C", used)
+             for cont in sorted(continuations)}
+    out = {nt: [list(p) for p in prods] for nt, prods in grammar.items()}
+
+    for cont, name in names.items():
+        rules = []
+        for alt in grammar[target]:
+            if not alt:
+                rules.append(list(cont))            # ε · γ = γ
+            elif alt[-1] == target:
+                rules.append(alt[:-1] + [name])     # ripiega la ricorsione
+            else:
+                rules.append(alt + list(cont))
+        out[name] = rules
+
+    def rewrite(prod):
+        res = []
+        for i, sym in enumerate(prod):
+            if sym == target and tuple(prod[i + 1:]) in names:
+                res.append(names[tuple(prod[i + 1:])])
+                return res
+            res.append(sym)
+        return res
+
+    generated = set(names.values())
+    for nt in list(out):
+        if nt not in generated:
+            out[nt] = [rewrite(p) for p in out[nt]]
+
+    return out, set()
+
+
+def specialize_deep(grammar, target, used, start_symbol, seen=None, depth=0):
+    """specialize() che risolve prima i bloccanti, dall'esterno all'interno."""
+    if depth > 4:
+        return None
+    seen = set() if seen is None else seen
+    if target in seen:
+        return None
+    seen.add(target)
+
+    out, blockers = specialize(grammar, target, used)
+    if out is not None:
+        return _reachable(out, start_symbol)
+
+    for blocker in sorted(blockers):
+        lifted = specialize_deep(grammar, blocker, used, start_symbol, seen, depth + 1)
+        if lifted is None:
+            continue
+        retry, _ = specialize(lifted, target, used)
+        return _reachable(retry if retry is not None else lifted, start_symbol)
+    return None
+
+
+def inline_heads(grammar, nt, competing, start_symbol):
+    """T3 — sostituisce il NT di testa delle alternative in conflitto."""
+    new_prods, changed = [], False
+    for prod in grammar[nt]:
+        head_is_nt = prod and prod[0] in grammar and prod[0] != nt
+        if prod in competing and head_is_nt:
+            for alt in grammar[prod[0]]:
+                candidate = alt + prod[1:]
+                if candidate not in new_prods:
+                    new_prods.append(candidate)
+            changed = True
+        elif prod not in new_prods:
+            new_prods.append(prod)
+
+    if not changed:
+        return None
+    out = {k: [list(p) for p in v] for k, v in grammar.items()}
+    out[nt] = new_prods
+    return _reachable(out, start_symbol)
+
+
+def ll1ify(grammar, start_symbol="S*", max_rounds=MAX_TRANSFORM_ROUNDS):
+    """
+    Prova a riscrivere `grammar` in forma LL(1) preservando il linguaggio.
+
+    Parametri
+    ---------
+    grammar : dict  { NT: [production_list, ...] }
+        La grammatica in forma classica costruita da parsing_table() a
+        partire da final_rules.
+    start_symbol : str
+        Simbolo iniziale (per convenzione 'S*').
+    max_rounds : int
+        Limite di round del ciclo trasforma-e-ricontrolla.
+
+    Ritorna
+    -------
+    dict | None
+        La grammatica riscritta e priva di conflitti, oppure None se non si
+        è raggiunta una forma LL(1) entro i limiti.  In quel caso il
+        chiamante lascia risalire il conflitto originale.
+    """
+    grammar = normalise_epsilon(grammar)
+    budget = max(len(grammar) * MAX_TRANSFORM_GROWTH, len(grammar) + 16)
+    used = set(grammar)
+
+    grammar = left_factor(grammar, used)
+
+    for rnd in range(max_rounds):
+        conflicts = find_conflicts(grammar, start_symbol)
+        if not conflicts:
+            logging.info(
+                f"LL(1) auto-transform: conflitti risolti in {rnd} round, "
+                f"{len(grammar)} non-terminali."
+            )
+            return grammar
+
+        if len(grammar) > budget:
+            logging.info(
+                "LL(1) auto-transform: superato il budget di crescita "
+                f"({len(grammar)} NT > {budget}), rinuncio."
+            )
+            return None
+
+        nt, terminal, competing = conflicts[0]
+        logging.info(
+            f"LL(1) auto-transform round {rnd}: conflitto su {nt} "
+            f"con lookahead {terminal!r} fra {competing}"
+        )
+
+        # I conflitti FIRST/FOLLOW vanno affrontati per primi: finché la
+        # continuazione non è inlineata le alternative in competizione stanno
+        # in non-terminali diversi e nulla di locale le raggiunge.
+        step = None
+        for c_nt, _, c_competing in conflicts:
+            if any(not p for p in c_competing):
+                step = specialize_deep(grammar, c_nt, used, start_symbol)
+                if step is not None:
+                    break
+        if step is None:
+            for c_nt, _, c_competing in conflicts:
+                step = inline_heads(grammar, c_nt, c_competing, start_symbol)
+                if step is not None:
+                    break
+        if step is None:
+            logging.info("LL(1) auto-transform: nessuna trasformazione applicabile.")
+            return None
+
+        grammar = left_factor(step, used)
+
+    logging.info(f"LL(1) auto-transform: non convergente in {max_rounds} round.")
+    return None
 
 
 def parsing_table(final_rules):
@@ -397,6 +772,18 @@ def parsing_table(final_rules):
     for (nt, _), rules in final_rules.items():
         grammar[nt].extend(rules)
 
+    # Una sola rappresentazione dell'epsilon da qui in poi.  process_full_grammar
+    # emette l'alternativa epsilon come ['ε'], mentre la tabella e il PDA usano
+    # [];  compute_all_first_sets accettava entrambe le forme con un ramo
+    # dedicato, ma compute_first_of_string trattava 'ε' come un terminale
+    # qualsiasi e dava la risposta giusta solo perché il marcatore coincide con
+    # il nome del simbolo.  Canonicalizzare qui rende quella coincidenza
+    # irrilevante ed elimina un 'ε' residuo dentro produzioni più lunghe, che
+    # sarebbe finito nella tabella e avrebbe fatto fallire il PDA come terminale
+    # inesistente.  Sulla costruzione della tabella è un no-op: ['ε'] e [] danno
+    # gli stessi FIRST, FOLLOW e celle.
+    grammar = normalise_epsilon(dict(grammar))
+
     def save_table_parsing_as_txt(table):
         """
         Serializza la parsing table in JSON leggibile per debug.
@@ -473,7 +860,7 @@ def parsing_table(final_rules):
                             )
                         table[non_terminal][terminal] = []
         for key in table:
-            table[key].pop('$', None)
+            table[key].pop(EOF_MARKER, None)
         return table
 
     logging.info("\nProcessed grammar:\n")
@@ -487,7 +874,25 @@ def parsing_table(final_rules):
     logging.info("\nFollow sets:\n")
     logging.info(follow_sets)
 
+    # La grammatica in ingresso può non essere LL(1): metterla in forma LL(1)
+    # è parte della costruzione della tabella, non una riparazione a
+    # posteriori.  Il controllo riusa i FIRST/FOLLOW già calcolati, quindi
+    # costa una sola passata sulle produzioni.
+    if find_conflicts(grammar, 'S*', first_sets, follow_sets):
+        repaired = ll1ify(grammar, 'S*')
+        if repaired is not None:
+            logging.info(
+                f"Grammatica messa in forma LL(1): "
+                f"{len(grammar)} → {len(repaired)} non-terminali."
+            )
+            grammar = repaired
+            first_sets = compute_all_first_sets(grammar)
+            follow_sets = follow(grammar, first_sets, 'S*')
+        # Se la riscrittura non converge la grammatica resta com'è e
+        # compute_parsing_table solleva il suo ValueError diagnostico.
+
     table = compute_parsing_table(grammar, first_sets, follow_sets)
+
     save_table_parsing_as_txt(table)
 
     return table

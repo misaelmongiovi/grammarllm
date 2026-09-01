@@ -588,14 +588,30 @@ class StatelessLogitsProcessor(LogitsProcessor):
         """
         if pda.eos():
             return False
-        if token in (self.tokenizer.bos_token_id, self.tokenizer.pad_token_id,
-                     getattr(self.tokenizer, 'unk_token_id', None)):
-            return True
+        # EOS PRIMA di PAD: generate_text() imposta pad_token = eos_token quando
+        # il tokenizer non ha un pad token (il caso normale per Llama-3/Qwen e in
+        # generale i modelli instruct).  Da quel momento pad_token_id ==
+        # eos_token_id e, con il controllo PAD per primo, il ramo EOS qui sotto
+        # diventava codice morto: l'EOS veniva scartato come "token speciale" e
+        # il PDA non consumava mai la produzione `S* -> eos_token`.  La pila
+        # restava non vuota e il risultato riportava pda_stack sporca anche per
+        # generazioni perfettamente valide (su SMILES: ['TAIL_NT'] invece di []
+        # su OGNI riga, cioe' 0% di validita' misurata a fronte del 100% reale).
+        # Il difetto e' di solo reporting — la maschera durante la generazione e'
+        # calcolata da __call__ su PDA avanzati correttamente — ma falsa
+        # qualunque metrica costruita su pda_stack.
+        #
+        # I PAD veri restano gestiti: in un batch HF riempie con pad_token_id le
+        # sequenze finite prima delle altre, ma quel padding segue sempre l'EOS,
+        # quindi il guard `pda.eos()` in cima assorbe quei token.
         if token == self.tokenizer.eos_token_id:
             valid, paths = self._valid_ids(pda)
             if token not in valid:
                 return False        # EOS forced by the dead-end fallback
             self._advance(pda, token, paths)
+            return True
+        if token in (self.tokenizer.bos_token_id, self.tokenizer.pad_token_id,
+                     getattr(self.tokenizer, 'unk_token_id', None)):
             return True
         self._advance(pda, token)
         return True
