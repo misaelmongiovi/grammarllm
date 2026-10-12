@@ -91,8 +91,12 @@ def lookahead_paths(pda, trie):
 
     Regex terminals (pda.regex_terminals) are yielded whole at depth 0 and
     never crossed (spec L2 — see the regex-lookahead future-work doc).
+    Atomic terminals (pda.atomic_terminals, i.e. EOS) are treated the same
+    way: only a whole token mapped to them may consume them, so EOS cannot be
+    spelled out of ordinary tokens such as '<|' + 'eot' + ...
     """
     results: dict[int, list] = {}
+    whole_only = pda.regex_terminals | getattr(pda, "atomic_terminals", frozenset())
 
     def dfs(state, node, consumed):
         if state.residue:
@@ -103,10 +107,10 @@ def lookahead_paths(pda, trie):
             from_residue = False
 
         for frag in fragments:
-            if not from_residue and frag in state.regex_terminals:
+            if not from_residue and frag in whole_only:
                 if not consumed:
-                    # depth 0: regex class participates as whole tokens,
-                    # replayed as a plain terminal consumption
+                    # depth 0: regex class / atomic terminal participates
+                    # as whole tokens, replayed as a plain terminal consumption
                     path = ((frag,), len(frag))
                     for token_id in state.map_terminals_tokens.get(frag, []):
                         bucket = results.setdefault(token_id, [])

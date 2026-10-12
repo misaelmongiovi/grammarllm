@@ -111,6 +111,11 @@ class PushdownAutomaton:
         self.residue = ""            # unconsumed suffix of a partially-covered terminal
         self.lookahead = False       # engine flag, set by generate_grammar_parameters
         self.regex_terminals = set(map.get(REGEX_TERMINALS_KEY, []))
+        # Terminals that only a whole vocabulary token may consume: the lookahead
+        # never cuts them or merges them with neighbours.  Set by
+        # generate_grammar_parameters to {tokenizer.eos_token}, so that EOS cannot
+        # be "spelled" with ordinary tokens ('<|', 'eot', ...).
+        self.atomic_terminals = frozenset()
 
         for non_terminal, value in map.items():
             if non_terminal == REGEX_TERMINALS_KEY:
@@ -176,6 +181,7 @@ class PushdownAutomaton:
         new_pda.residue = self.residue
         new_pda.lookahead = self.lookahead
         new_pda.regex_terminals = self.regex_terminals   # read-only, shared
+        new_pda.atomic_terminals = getattr(self, "atomic_terminals", frozenset())
 
         return new_pda
 
@@ -400,6 +406,15 @@ class PushdownAutomaton:
             Il terminale grammaticale da consumare (stringa, non token ID).
             Deriva da next_state() dopo la risoluzione del token ID.
 
+        Ritorna
+        -------
+        list[tuple[str, tuple[str, ...]]]
+            Le espansioni applicate, in ordine: (non-terminale, produzione).
+            Una produzione epsilon compare come (NT, ()).  Permette ai chiamanti
+            di ricostruire l'albero di derivazione (quale regola ha generato il
+            terminale e, risalendo, i suoi NT antenati); i chiamanti esistenti
+            possono ignorarla.
+
         Nota sulla distinzione epsilon vs entry mancante
         -------------------------------------------------
         La parsing table usa [] (lista vuota) per le produzioni epsilon.
@@ -424,16 +439,17 @@ class PushdownAutomaton:
                     f"Valid lookaheads for '{top}': {list(self.grammar[top].keys())}. "
                     f"Current stack: {self.stack}"
                 )
-            for symbol in reversed(self.grammar[top][token]):
+            production = self.grammar[top][token]
+            for symbol in reversed(production):
                 stack.append(symbol)
-            self.next_state_terminal(token)
-            return
+            return [(top, tuple(production))] + self.next_state_terminal(token)
 
         if top != token:
             raise ValueError(
                 f"PDA stack mismatch: expected terminal '{token}' but top of stack is '{top}'. "
                 f"Remaining stack: {stack}"
             )
+        return []
 
     def apply_lookahead_path(self, fragments, chars_into_last):
         """
@@ -451,7 +467,13 @@ class PushdownAutomaton:
         moment the token ENTERS it (next_state_terminal); the unspelled
         suffix lives in self.residue. eos() stays False until the residue
         is spelled out.
+
+        Returns one ``(fragment, expansions)`` pair per fragment, in order:
+        the NT expansions applied before that terminal was popped (see
+        next_state_terminal).  A fragment that continues the residue has no
+        expansions.  Existing callers may ignore the return value.
         """
+        applied = []
         for i, frag in enumerate(fragments):
             last = (i == len(fragments) - 1)
             if i == 0 and self.residue:
@@ -460,10 +482,13 @@ class PushdownAutomaton:
                         f"Lookahead path expected residue {self.residue!r}, got {frag!r}"
                     )
                 self.residue = frag[chars_into_last:] if last else ""
+                applied.append((frag, []))
                 continue
-            self.next_state_terminal(frag)
+            expansions = self.next_state_terminal(frag)
             self.residue = frag[chars_into_last:] if last else ""
+            applied.append((frag, expansions))
         self.get_tokens()
+        return applied
 
     def eos(self):
         """
