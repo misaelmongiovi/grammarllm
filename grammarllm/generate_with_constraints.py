@@ -162,6 +162,10 @@ def generate_grammar_parameters(tokenizer, pars_tab, map_terminal_tokens,
     # Token-boundary lookahead (spec L3): ON by default. Pass
     # token_lookahead=False for the boundary-strict A/B baseline.
     base_pda.lookahead = token_lookahead
+    # EOS is a grammar terminal (S* -> eos_token): only the EOS token itself
+    # may consume it, never a lookahead spelling such as '<|' + 'eot' + ...
+    if tokenizer.eos_token is not None:
+        base_pda.atomic_terminals = frozenset({tokenizer.eos_token})
 
     # If num_return_sequences is 1, we can just use one.
     # If >1, we need to clone it or create new ones.
