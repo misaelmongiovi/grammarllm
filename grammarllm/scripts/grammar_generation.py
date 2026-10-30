@@ -120,7 +120,10 @@ class ProductionRuleProcessor:
         list[list[tuple[str, str]]]
             Una lista (una per produzione alternativa) di liste di (tipo, valore).
         """
-        tag_pattern = re.compile(r'<<(.+?)>>')
+        # DOTALL: senza, '.' non attraversa '\n' e un tag come <<\n>> non
+        # veniva riconosciuto — il testo finiva spezzato in simboli "other"
+        # spuri ('<<', '>>') e il PDA imponeva quei terminali letterali.
+        tag_pattern = re.compile(r'<<(.+?)>>', re.DOTALL)
         result = []
 
         for item in rhs_list:

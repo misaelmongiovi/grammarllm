@@ -261,3 +261,34 @@ class TestSharedTagPrefixKeepsContinuation:
         langs = reachable_terminal_sequences(grammar)
         assert toks(tokenizer, 'alpha', 'x') in langs
         assert toks(tokenizer, 'alfa', 'x') in langs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tags containing newlines
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestNewlineTags:
+    """
+    The tag regex used to lack re.DOTALL, so '.' never crossed '\\n': a tag
+    like <<\\n>> was not recognised and the production degraded into the
+    spurious literal terminals '<<' and '>>'.
+    """
+
+    def test_newline_only_tag(self, processor, tokenizer):
+        grammar, _ = processor.process_full_grammar({'S*': ['<<\n>>']})
+        assert reachable_terminal_sequences(grammar) == {toks(tokenizer, '\n')}
+
+    def test_newline_tag_after_other_tag(self, processor, tokenizer):
+        prods = {'S*': ['<<a>> X <<\n>>'], 'X': ['<<b>>']}
+        grammar, _ = processor.process_full_grammar(prods)
+        assert reachable_terminal_sequences(grammar) == {toks(tokenizer, 'a', 'b', '\n')}
+
+    def test_tag_spanning_lines(self, processor, tokenizer):
+        grammar, _ = processor.process_full_grammar({'S*': ['<<a\nb>>']})
+        assert reachable_terminal_sequences(grammar) == {toks(tokenizer, 'a\nb')}
+
+    def test_newline_shares_prefix_with_alternative(self, processor, tokenizer):
+        prods = {'S*': ['<<\n>> A', '<<\nfoo>> A'], 'A': ['<<z>>']}
+        grammar, _ = processor.process_full_grammar(prods)
+        assert reachable_terminal_sequences(grammar) == {
+            toks(tokenizer, '\n', 'z'), toks(tokenizer, '\nfoo', 'z')}
